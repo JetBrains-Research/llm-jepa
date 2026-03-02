@@ -1,3 +1,8 @@
+WANDB_FLAGS=""
+# Uncomment to enable W&B logging:
+# WANDB_FLAGS="--wandb --wandb_project llm-jepa"
+# Optionally add: --wandb_run_name my-run
+
 run_regular() {
   base_model_name=${1}
   learning_rate=${2}
@@ -12,7 +17,7 @@ run_regular() {
   torchrun --nproc_per_node=8 finetune.py \
     --train_file ${dataset}_train.jsonl \
     --output_dir=./fine-tuned --num_epochs=${epoch} --finetune_seed=${seed} --regular \
-    --model_name=${base_model_name} --learning_rate=${learning_rate}
+    --model_name=${base_model_name} --learning_rate=${learning_rate} ${WANDB_FLAGS}
   python evaluate.py --model_name=./fine-tuned \
     --input_file=${dataset}_test.jsonl --output_file=eval.jsonl --split_tune_untune \
     --original_model_name=${base_model_name} --nosplit_data \
@@ -34,7 +39,7 @@ run_jepa() {
     --train_file ${dataset}_train.jsonl \
     --output_dir=./fine-tuned --num_epochs=${epoch} --finetune_seed=${seed} \
     --last_token=${last_token} --lbd=${lbd} --predictors=${predictors} \
-    --model_name=${base_model_name} --learning_rate=${learning_rate}
+    --model_name=${base_model_name} --learning_rate=${learning_rate} ${WANDB_FLAGS}
   python evaluate.py --model_name=./fine-tuned \
     --input_file=${dataset}_test.jsonl --output_file=eval.jsonl --split_tune_untune \
     --original_model_name=${base_model_name} --nosplit_data \
