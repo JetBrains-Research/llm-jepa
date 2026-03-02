@@ -487,7 +487,7 @@ def eval(generated, ground_truth, input_file, spider_path, startswith=False, deb
             print("-----startswith-----")
         return generated.startswith(ground_truth[2]["content"])
 
-    if input_file.startswith("gsm8k"):
+    if "gsm8k" in os.path.basename(input_file):
         gt_match = re.search(gsm8k_pattern, ground_truth[2]["content"])
         gt_answer = None if not gt_match else gt_match.group(1)
         gen_match = re.search(gsm8k_pattern, generated)
@@ -499,10 +499,10 @@ def eval(generated, ground_truth, input_file, spider_path, startswith=False, deb
             print("-----GSM8K-----")
         return gt_answer == gen_answer
 
-    if input_file.startswith("spider"):
+    if os.path.basename(input_file).startswith("spider"):
         return spider_eval(generated, ground_truth, spider_path, debug=debug)
     
-    if input_file.startswith("nq_open"):
+    if os.path.basename(input_file).startswith("nq_open"):
         answer_list = generated.split("; ")
         for answer in answer_list:
             if answer in ground_truth[2]["content"]:
@@ -617,7 +617,7 @@ def process_dataset(input_file, output_file, original_model_name, model, tokeniz
                 if split_tune_untune:
                     full_messages = get_messages(original_model_name, messages)
                     prompt = format_conversation(full_messages, tokenizer, plain=plain)
-                    if input_file.startswith("hellaswag"):
+                    if "hellaswag" in os.path.basename(input_file):
                         generated_response = relative_probability(model, tokenizer, prompt, max_length=generation_config.max_new_tokens)
                         if debug == 6:
                             print(f"<<< {prompt}")
