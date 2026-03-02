@@ -6,6 +6,8 @@ import math
 import os
 # import re
 import time
+from dotenv import load_dotenv
+load_dotenv()
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -20,7 +22,8 @@ from transformers import (
     TrainingArguments,
     TrainerCallback,
     Trainer,
-    DataCollatorForLanguageModeling
+    DataCollatorForLanguageModeling,
+    default_data_collator,
 )
 from peft import LoraConfig, get_peft_model, TaskType
 import argparse
@@ -722,6 +725,18 @@ class RepresentationTrainer(Trainer):
         if self.debug == 5 and torch.cuda.current_device() == 0:
             print(f"llm_loss: {lm_loss.float()}, jepa_loss: {jepa_loss.float()}")
 
+        if torch.cuda.current_device() == 0:
+            try:
+                import wandb
+                if wandb.run is not None:
+                    log_dict = {"train/lm_loss": lm_loss.float().item()}
+                    if user_hidden_states is not None:
+                        log_dict["train/jepa_loss"] = jepa_loss.float().item() if isinstance(jepa_loss, torch.Tensor) else float(jepa_loss)
+                        log_dict["train/cosine_similarity"] = torch.mean(cosine_similarity).float().item()
+                    wandb.log(log_dict, commit=False)
+            except ImportError:
+                pass
+
         return (total_loss, main_outputs) if return_outputs else total_loss
 
 
@@ -788,6 +803,10 @@ def main():
     parser.add_argument("--infonce", action="store_true", help="When set, Use InfoNCE loss.")
     parser.add_argument("--same_flop", action="store_true", help="When set, Use same number of flops per epoch.")
     parser.add_argument("--jepa_ratio", type=float, default=-1.0, help="When >0, randomly select this ratio of batches to apply JEPA. This implments Random JEPA-Loss Dropout (LD). If LD = alpha, jepa_ratio = 1 - alpha")
+    parser.add_argument("--no_save", action="store_true", help="Disable checkpoint saving entirely.")
+    parser.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging.")
+    parser.add_argument("--wandb_project", type=str, default="llm-jepa", help="W&B project name.")
+    parser.add_argument("--wandb_run_name", type=str, default=None, help="W&B run name. Auto-generated if not set.")
 
     args = parser.parse_args()
     
@@ -826,6 +845,22 @@ def main():
         # Initialize distributed training
         torch.distributed.init_process_group(backend='nccl')
         torch.cuda.set_device(local_rank)
+
+    if args.wandb and local_rank == 0:
+        import wandb
+        # Support both WANDB_BASE_URL (official) and WANDB_API_URL (.env alias)
+        base_url = os.environ.get("WANDB_BASE_URL") or os.environ.get("WANDB_API_URL")
+        if base_url:
+            os.environ["WANDB_BASE_URL"] = base_url
+        run_name = args.wandb_run_name or (
+            f"{args.model_name.split('/')[-1]}"
+            f"_{'jepa' if not args.regular else 'regular'}"
+            f"_lr{args.learning_rate}_lbd{args.lbd}"
+            f"_s{args.finetune_seed}"
+        )
+        wandb.init(project=args.wandb_project, name=run_name, config=vars(args))
+        if torch.cuda.current_device() == 0:
+            print(f"W&B run: {wandb.run.url}")
     
     # Setup model and tokenizer
     if torch.cuda.current_device() == 0:
@@ -891,12 +926,10 @@ def main():
         else:
             print("No evaluation dataset")
     
-    # Data collator - don't use padding since we already padded
-    data_collator = DataCollatorForLanguageModeling(
-        tokenizer=tokenizer,
-        mlm=False,  # We're doing causal LM, not masked LM
-        pad_to_multiple_of=None,  # We already padded to max_length
-    )
+    # Use default_data_collator to preserve the pre-computed masked labels.
+    # DataCollatorForLanguageModeling(mlm=False) would overwrite labels with
+    # input_ids.clone(), erasing the -100 masking on non-assistant tokens.
+    data_collator = default_data_collator
     
     # Training arguments - optimized for multi-GPU stability
     eval_steps = args.eval_steps if not args.pretrain else args.eval_steps * 20
@@ -919,8 +952,7 @@ def main():
         os.makedirs(output_dir, exist_ok=True)
     training_args = TrainingArguments(
         output_dir=output_dir,
-        overwrite_output_dir=True,
-        
+
         # Training parameters
         per_device_train_batch_size=args.batch_size,
         per_device_eval_batch_size=args.batch_size,
@@ -933,9 +965,9 @@ def main():
         # eval_steps=eval_steps,
         
         # Saving
-        save_strategy="steps",
-        save_steps=save_steps,
-        save_total_limit=args.num_epochs * 4,
+        save_strategy="no" if args.no_save else "steps",
+        save_steps=save_steps if not args.no_save else 0,
+        save_total_limit=None if args.no_save else args.num_epochs * 4,
 
         # Logging
         logging_dir=f"{args.output_dir}/logs",
@@ -959,9 +991,10 @@ def main():
         fsdp_config={},
         
         # Other
-        report_to="none",
+        report_to="wandb" if args.wandb else "none",
+        run_name=args.wandb_run_name if args.wandb else None,
         remove_unused_columns=False,
-        load_best_model_at_end=True if eval_dataset else False,
+        load_best_model_at_end=True if (eval_dataset and not args.no_save) else False,
         
         # Disable problematic optimizations
         tf32=False,  # May help with stability
@@ -982,7 +1015,7 @@ def main():
             args=training_args,
             train_dataset=train_dataset,
             eval_dataset=eval_dataset,
-            tokenizer=tokenizer,
+            processing_class=tokenizer,
             data_collator=data_collator,
             callbacks=[flop_callback] if args.track_flop else [],
         )
@@ -994,7 +1027,7 @@ def main():
             args=training_args,
             train_dataset=train_dataset,
             eval_dataset=eval_dataset,
-            tokenizer=tokenizer,
+            processing_class=tokenizer,
             data_collator=data_collator,
             callbacks=[flop_callback] if args.track_flop else [],
             lbd=args.lbd,
