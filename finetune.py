@@ -828,7 +828,7 @@ class EvalAccuracyCallback(TrainerCallback):
         generated_tokens = outputs[0][len(inputs["input_ids"][0]):]
         return self.tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
 
-    def on_epoch_end(self, args, state, control, model=None, **kwargs):
+    def _run_eval(self, state, model, label="epoch"):
         if model is not None:
             eval_model = model.module if hasattr(model, "module") else model
             eval_model.eval()
@@ -864,8 +864,8 @@ class EvalAccuracyCallback(TrainerCallback):
             accuracy = correct / total if total > 0 else 0.0
 
             if rank == 0:
-                epoch = int(state.epoch)
-                print(f"Eval accuracy (epoch {epoch}): {accuracy:.4f} ({correct}/{total})")
+                epoch = int(state.epoch) if state.epoch else 0
+                print(f"Eval accuracy ({label} {epoch}): {accuracy:.4f} ({correct}/{total})")
                 try:
                     import wandb
                     if wandb.run is not None:
@@ -876,6 +876,14 @@ class EvalAccuracyCallback(TrainerCallback):
                         wandb.log({"eval/accuracy": accuracy, "eval/correct": correct, "eval/total": total, "eval/predictions": table})
                 except ImportError:
                     pass
+
+    def on_train_begin(self, args, state, control, model=None, **kwargs):
+        self._run_eval(state, model, label="step")
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()
+
+    def on_epoch_end(self, args, state, control, model=None, **kwargs):
+        self._run_eval(state, model, label="epoch")
 
         if torch.distributed.is_initialized():
             torch.distributed.barrier()
@@ -1032,6 +1040,20 @@ def main():
                 args.max_length, regular=args.regular,
                 debug=args.debug, train_all=args.train_all, plain=args.plain,
                 front_pred=args.front_pred, reverse_pred=args.reverse_pred)
+        elif args.eval_accuracy and eval_raw_examples:
+            eval_split_file = args.train_file + '.eval_split.jsonl'
+            with open(eval_split_file, 'w') as f:
+                for ex in eval_raw_examples:
+                    f.write(json.dumps(ex) + '\n')
+            eval_dataset = load_and_prepare_dataset(
+                eval_split_file, tokenizer, args.model_name,
+                args.max_length, regular=args.regular,
+                debug=args.debug, train_all=args.train_all, plain=args.plain,
+                front_pred=args.front_pred, reverse_pred=args.reverse_pred)
+            if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+                os.remove(eval_split_file)
+            if torch.cuda.current_device() == 0:
+                print(f"Using {len(eval_raw_examples)} eval examples for loss calculation")
         else:
             eval_dataset = None
             if torch.cuda.current_device() == 0:
