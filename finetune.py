@@ -793,14 +793,16 @@ def _eval_generated(generated, messages, input_file):
 
 
 class EvalAccuracyCallback(TrainerCallback):
-    """Generation-based eval at end of each epoch, logs accuracy to W&B."""
+    """Generation-based eval at end of each epoch and/or every N steps, logs accuracy to W&B."""
 
-    def __init__(self, eval_examples, tokenizer, model_name, input_file, max_new_tokens=512):
+    def __init__(self, eval_examples, tokenizer, model_name, input_file, max_new_tokens=512,
+                 eval_steps=None):
         self.eval_examples = eval_examples
         self.tokenizer = tokenizer
         self.model_name = model_name
         self.input_file = input_file
         self.max_new_tokens = max_new_tokens
+        self.eval_steps = eval_steps
         self.chat_template_kwargs = {}
         if "Qwen3" in model_name:
             self.chat_template_kwargs["enable_thinking"] = False
@@ -828,43 +830,53 @@ class EvalAccuracyCallback(TrainerCallback):
         generated_tokens = outputs[0][len(inputs["input_ids"][0]):]
         return self.tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
 
+    def _run_eval(self, state, model):
+        if torch.cuda.current_device() != 0 or model is None:
+            return
+        eval_model = model.module if hasattr(model, "module") else model
+        eval_model.eval()
+        old_use_cache = getattr(eval_model.config, "use_cache", False)
+        eval_model.config.use_cache = True
+
+        correct = 0
+        total = len(self.eval_examples)
+        table_rows = []
+        for example in tqdm(self.eval_examples, desc="Eval generation", disable=False):
+            messages = example["messages"]
+            prompt = self._format_prompt(messages)
+            generated = self._generate(eval_model, prompt)
+            is_correct = _eval_generated(generated, messages, self.input_file)
+            if is_correct:
+                correct += 1
+            table_rows.append([messages[1]["content"], messages[2]["content"], generated, is_correct])
+
+        accuracy = correct / total if total > 0 else 0.0
+        print(f"Eval accuracy (step {state.global_step}): {accuracy:.4f} ({correct}/{total})")
+
+        try:
+            import wandb
+            if wandb.run is not None:
+                table = wandb.Table(
+                    columns=["input", "ground_truth", "prediction", "correct"],
+                    data=table_rows,
+                )
+                wandb.log({"eval/accuracy": accuracy, "eval/correct": correct,
+                           "eval/total": total, "eval/predictions": table},
+                          step=state.global_step)
+        except ImportError:
+            pass
+
+        eval_model.config.use_cache = old_use_cache
+        eval_model.train()
+
+    def on_step_end(self, args, state, control, model=None, **kwargs):
+        if self.eval_steps and state.global_step % self.eval_steps == 0:
+            self._run_eval(state, model)
+            if torch.distributed.is_initialized():
+                torch.distributed.barrier()
+
     def on_epoch_end(self, args, state, control, model=None, **kwargs):
-        if torch.cuda.current_device() == 0 and model is not None:
-            eval_model = model.module if hasattr(model, "module") else model
-            eval_model.eval()
-            old_use_cache = getattr(eval_model.config, "use_cache", False)
-            eval_model.config.use_cache = True
-
-            correct = 0
-            total = len(self.eval_examples)
-            table_rows = []
-            for example in tqdm(self.eval_examples, desc="Eval generation", disable=False):
-                messages = example["messages"]
-                prompt = self._format_prompt(messages)
-                generated = self._generate(eval_model, prompt)
-                is_correct = _eval_generated(generated, messages, self.input_file)
-                if is_correct:
-                    correct += 1
-                table_rows.append([messages[1]["content"], messages[2]["content"], generated, is_correct])
-
-            accuracy = correct / total if total > 0 else 0.0
-            epoch = int(state.epoch)
-            print(f"Eval accuracy (epoch {epoch}): {accuracy:.4f} ({correct}/{total})")
-
-            try:
-                import wandb
-                if wandb.run is not None:
-                    table = wandb.Table(
-                        columns=["input", "ground_truth", "prediction", "correct"],
-                        data=table_rows,
-                    )
-                    wandb.log({"eval/accuracy": accuracy, "eval/correct": correct, "eval/total": total, "eval/predictions": table})
-            except ImportError:
-                pass
-
-            eval_model.config.use_cache = old_use_cache
-            eval_model.train()
-
+        self._run_eval(state, model)
         if torch.distributed.is_initialized():
             torch.distributed.barrier()
 
@@ -912,6 +924,7 @@ def main():
     parser.add_argument("--eval_accuracy", action="store_true", help="Run generation-based eval at end of each epoch (splits 20%% from train data).")
     parser.add_argument("--max_new_tokens_eval", type=int, default=256, help="Max new tokens for eval generation.")
     parser.add_argument("--max_eval_samples", type=int, default=50, help="Max samples for generation-based eval (0=all).")
+    parser.add_argument("--eval_accuracy_steps", type=int, default=None, help="Also run generation-based eval every N steps (in addition to epoch-end eval). None = epoch-end only.")
 
     args = parser.parse_args()
     
@@ -1121,7 +1134,7 @@ def main():
         report_to="wandb" if args.wandb else "none",
         run_name=args.wandb_run_name if args.wandb else None,
         remove_unused_columns=False,
-        load_best_model_at_end=True if (eval_dataset and not args.no_save) else False,
+        load_best_model_at_end=False,
         
         # Disable problematic optimizations
         tf32=False,  # May help with stability
@@ -1140,7 +1153,8 @@ def main():
         eval_subset = eval_raw_examples[:args.max_eval_samples] if args.max_eval_samples > 0 else eval_raw_examples
         callbacks.append(EvalAccuracyCallback(
             eval_subset, tokenizer, args.model_name,
-            args.train_file, max_new_tokens=args.max_new_tokens_eval))
+            args.train_file, max_new_tokens=args.max_new_tokens_eval,
+            eval_steps=args.eval_accuracy_steps))
 
     # Initialize trainer
     if args.regular:
