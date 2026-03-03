@@ -667,8 +667,8 @@ class RepresentationTrainer(Trainer):
         was_training = model.training
         model.eval()
 
-        lm_losses, jepa_losses, cosine_sims = [], [], []
-        self._eval_metrics = {'lm_loss': lm_losses, 'jepa_loss': jepa_losses, 'cosine_similarity': cosine_sims}
+        lm_losses, jepa_losses, cosine_sims, losses = [], [], [], []
+        self._eval_metrics = {'lm_loss': lm_losses, 'jepa_loss': jepa_losses, 'cosine_similarity': cosine_sims, 'loss': losses}
 
         for inputs in eval_dataloader:
             inputs = self._prepare_inputs(inputs)
@@ -684,6 +684,7 @@ class RepresentationTrainer(Trainer):
         if lm_losses:
             n = len(lm_losses)
             result["eval_lm_loss"] = sum(lm_losses) / n
+            result["eval_loss"] = sum(losses) / len(losses)
             if jepa_losses:
                 result["eval_jepa_loss"] = sum(jepa_losses) / len(jepa_losses)
                 result["eval_cosine_similarity"] = sum(cosine_sims) / len(cosine_sims)
@@ -692,7 +693,9 @@ class RepresentationTrainer(Trainer):
             try:
                 import wandb
                 if wandb.run is not None:
-                    wandb.log({"eval/" + k.removeprefix("eval_"): v for k, v in result.items()})
+                    log_dict = {"eval/" + k.removeprefix("eval_"): v for k, v in result.items()}
+                    log_dict["train/global_step"] = self.state.global_step
+                    wandb.log(log_dict)
             except ImportError:
                 pass
 
@@ -772,6 +775,7 @@ class RepresentationTrainer(Trainer):
 
         if hasattr(self, '_eval_metrics'):
             self._eval_metrics['lm_loss'].append(lm_loss.float().item())
+            self._eval_metrics['loss'].append(total_loss.float().item())
             if user_hidden_states is not None:
                 self._eval_metrics['jepa_loss'].append(jepa_loss.float().item() if isinstance(jepa_loss, torch.Tensor) else float(jepa_loss))
                 self._eval_metrics['cosine_similarity'].append(torch.mean(cosine_similarity).float().item())
@@ -846,6 +850,7 @@ class EvalAccuracyCallback(TrainerCallback):
         self.input_file = input_file
         self.max_new_tokens = max_new_tokens
         self.eval_steps = eval_steps
+        self.trainer = None
         self.chat_template_kwargs = {}
         if "Qwen3" in model_name:
             self.chat_template_kwargs["enable_thinking"] = False
@@ -918,13 +923,15 @@ class EvalAccuracyCallback(TrainerCallback):
                             data=table_rows,
                         )
                         wandb.log({"eval/accuracy": accuracy, "eval/correct": correct,
-                                   "eval/total": total, "eval/predictions": table},
-                                  step=state.global_step)
+                                   "eval/total": total, "eval/predictions": table,
+                                   "train/global_step": state.global_step})
                 except ImportError:
                     pass
 
     def on_train_begin(self, args, state, control, model=None, **kwargs):
-        self._run_eval(state, model, label="step")
+        if self.trainer is not None and hasattr(self.trainer, 'evaluate'):
+            self.trainer.evaluate()
+        self._run_eval(state, model, label="start")
         if torch.distributed.is_initialized():
             torch.distributed.barrier()
 
@@ -1265,7 +1272,11 @@ def main():
             infonce=args.infonce,
             jepa_ratio=args.jepa_ratio,
         )
-    
+
+    for cb in callbacks:
+        if isinstance(cb, EvalAccuracyCallback):
+            cb.trainer = trainer
+
     if torch.cuda.current_device() == 0 and args.lora:
         print("=== PEFT Model Check ===")
         model.print_trainable_parameters()
@@ -1281,10 +1292,6 @@ def main():
             print("ERROR: No parameters require gradients!")
         else:
             print("First few trainable params:", trainable_params[:5])
-
-    # Baseline eval before training
-    if eval_dataset:
-        trainer.evaluate()
 
     # Start training
     if torch.cuda.current_device() == 0:
