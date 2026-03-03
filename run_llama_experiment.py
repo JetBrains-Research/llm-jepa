@@ -39,8 +39,8 @@ JEPA_PREDICTORS = 4
 MAX_NEW_TOKENS  = 512
 WANDB_PROJECT   = "llm-jepa"
 
-RESULTS_DIR  = "results/gsm8k_llama"
-CHUNKS_DIR   = "results/gsm8k_llama/eval_chunks"
+RESULTS_DIR  = f"results/{DATASET}_llama"
+CHUNKS_DIR   = f"results/{DATASET}_llama/eval_chunks"
 VENV         = ".venv/bin"
 
 # Which GPU pairs to use for training
@@ -291,33 +291,33 @@ def main():
         log("✗ JEPA training FAILED — check results/gsm8k_llama/jepa_s82_train.log")
 
     # ── 2. Evaluate both models ─────────────────────────────────────────────
-    log("=" * 60)
-    log("Phase 2: Evaluation")
-    log("=" * 60)
-
-    reg_acc  = None
-    jepa_acc = None
-
-    if reg_rc == 0:
-        log(f"▶ Evaluating regular model …")
-        reg_acc = run_parallel_eval("regular", reg_proc._output_dir, chunk_paths)
-
-    if jepa_rc == 0:
-        log(f"▶ Evaluating JEPA model …")
-        jepa_acc = run_parallel_eval("jepa", jepa_proc._output_dir, chunk_paths)
-
-    # ── 3. Report ───────────────────────────────────────────────────────────
-    log("=" * 60)
-    log("Phase 3: Report")
-    log("=" * 60)
-
-    report = generate_report(reg_acc, jepa_acc)
-    report_path = os.path.join(RESULTS_DIR, "report_llama.md")
-    with open(report_path, "w") as f:
-        f.write(report)
-
-    print("\n" + report)
-    log(f"Report saved → {report_path}")
+    # log("=" * 60)
+    # log("Phase 2: Evaluation")
+    # log("=" * 60)
+    #
+    # reg_acc  = None
+    # jepa_acc = None
+    #
+    # if reg_rc == 0:
+    #     log(f"▶ Evaluating regular model …")
+    #     reg_acc = run_parallel_eval("regular", reg_proc._output_dir, chunk_paths)
+    #
+    # if jepa_rc == 0:
+    #     log(f"▶ Evaluating JEPA model …")
+    #     jepa_acc = run_parallel_eval("jepa", jepa_proc._output_dir, chunk_paths)
+    #
+    # # ── 3. Report ───────────────────────────────────────────────────────────
+    # log("=" * 60)
+    # log("Phase 3: Report")
+    # log("=" * 60)
+    #
+    # report = generate_report(reg_acc, jepa_acc)
+    # report_path = os.path.join(RESULTS_DIR, "report_llama.md")
+    # with open(report_path, "w") as f:
+    #     f.write(report)
+    #
+    # print("\n" + report)
+    # log(f"Report saved → {report_path}")
 
 
 if __name__ == "__main__":
