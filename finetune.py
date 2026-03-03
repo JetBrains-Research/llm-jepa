@@ -836,14 +836,16 @@ def _eval_generated(generated, messages, input_file):
 
 
 class EvalAccuracyCallback(TrainerCallback):
-    """Generation-based eval at end of each epoch, logs accuracy to W&B."""
+    """Generation-based eval at end of each epoch and/or every N steps, logs accuracy to W&B."""
 
-    def __init__(self, eval_examples, tokenizer, model_name, input_file, max_new_tokens=512):
+    def __init__(self, eval_examples, tokenizer, model_name, input_file, max_new_tokens=512,
+                 eval_steps=None):
         self.eval_examples = eval_examples
         self.tokenizer = tokenizer
         self.model_name = model_name
         self.input_file = input_file
         self.max_new_tokens = max_new_tokens
+        self.eval_steps = eval_steps
         self.chat_template_kwargs = {}
         if "Qwen3" in model_name:
             self.chat_template_kwargs["enable_thinking"] = False
@@ -907,8 +909,7 @@ class EvalAccuracyCallback(TrainerCallback):
             accuracy = correct / total if total > 0 else 0.0
 
             if rank == 0:
-                epoch = int(state.epoch) if state.epoch else 0
-                print(f"Eval accuracy ({label} {epoch}): {accuracy:.4f} ({correct}/{total})")
+                print(f"Eval accuracy ({label} step={state.global_step}): {accuracy:.4f} ({correct}/{total})")
                 try:
                     import wandb
                     if wandb.run is not None:
@@ -916,7 +917,9 @@ class EvalAccuracyCallback(TrainerCallback):
                             columns=["input", "ground_truth", "prediction", "correct"],
                             data=table_rows,
                         )
-                        wandb.log({"eval/accuracy": accuracy, "eval/correct": correct, "eval/total": total, "eval/predictions": table})
+                        wandb.log({"eval/accuracy": accuracy, "eval/correct": correct,
+                                   "eval/total": total, "eval/predictions": table},
+                                  step=state.global_step)
                 except ImportError:
                     pass
 
@@ -925,9 +928,14 @@ class EvalAccuracyCallback(TrainerCallback):
         if torch.distributed.is_initialized():
             torch.distributed.barrier()
 
+    def on_step_end(self, args, state, control, model=None, **kwargs):
+        if self.eval_steps and state.global_step % self.eval_steps == 0:
+            self._run_eval(state, model, label="step")
+            if torch.distributed.is_initialized():
+                torch.distributed.barrier()
+
     def on_epoch_end(self, args, state, control, model=None, **kwargs):
         self._run_eval(state, model, label="epoch")
-
         if torch.distributed.is_initialized():
             torch.distributed.barrier()
 
@@ -975,6 +983,7 @@ def main():
     parser.add_argument("--eval_accuracy", action="store_true", help="Run generation-based eval at end of each epoch (splits 20%% from train data).")
     parser.add_argument("--max_new_tokens_eval", type=int, default=256, help="Max new tokens for eval generation.")
     parser.add_argument("--max_eval_samples", type=int, default=50, help="Max samples for generation-based eval (0=all).")
+    parser.add_argument("--eval_accuracy_steps", type=int, default=None, help="Also run generation-based eval every N steps (in addition to epoch-end eval). None = epoch-end only.")
 
     args = parser.parse_args()
     
@@ -1200,7 +1209,7 @@ def main():
         report_to="wandb" if args.wandb else "none",
         run_name=args.wandb_run_name if args.wandb else None,
         remove_unused_columns=False,
-        load_best_model_at_end=True if (eval_dataset and not args.no_save) else False,
+        load_best_model_at_end=False,
         
         # Disable problematic optimizations
         tf32=False,  # May help with stability
@@ -1219,7 +1228,8 @@ def main():
         eval_subset = eval_raw_examples[:args.max_eval_samples] if args.max_eval_samples > 0 else eval_raw_examples
         callbacks.append(EvalAccuracyCallback(
             eval_subset, tokenizer, args.model_name,
-            args.train_file, max_new_tokens=args.max_new_tokens_eval))
+            args.train_file, max_new_tokens=args.max_new_tokens_eval,
+            eval_steps=args.eval_accuracy_steps))
 
     # Initialize trainer
     if args.regular:

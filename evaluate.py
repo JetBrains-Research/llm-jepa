@@ -521,7 +521,7 @@ def eval(generated, ground_truth, input_file, spider_path, startswith=False, deb
     return generated == ground_truth[2]["content"]
 
 
-def process_dataset(input_file, output_file, original_model_name, model, tokenizer, 
+def process_dataset(input_file, output_file, original_model_name, model, tokenizer,
                     generation_config, spider_path, max_examples=None, skip_existing=True,
                     split_tune_untune=False, start_index=1, layer=-1, pooling="last",
                     debug=0, similarity=False, startswith=False, max_new_tokens=128, t_sne=False,
@@ -557,7 +557,7 @@ def process_dataset(input_file, output_file, original_model_name, model, tokeniz
     # Process examples
     results = []
     failed_count = 0
-    
+    prediction_log = []  # [{prompt, ground_truth, prediction, correct}, ...]
 
     sim_list = []
     sim_list_startswith = []
@@ -640,6 +640,12 @@ def process_dataset(input_file, output_file, original_model_name, model, tokeniz
                         is_startswith = eval(generated_response, messages, input_file, spider_path, startswith=True, debug=debug)
                         if is_startswith:
                             sim_list_startswith.append(cos_sim)
+                    prediction_log.append({
+                        "prompt": messages[1]["content"],
+                        "ground_truth": messages[2]["content"],
+                        "prediction": generated_response,
+                        "correct": equal,
+                    })
                     if debug == 2:
                         gen = repr(generated_response)
                         gt = repr(messages[2]["content"])
@@ -675,7 +681,7 @@ def process_dataset(input_file, output_file, original_model_name, model, tokeniz
             print(sum(sim_list_untune) / len(sim_list_untune), np.std(sim_list_untune))
         quantiles_fail = np.quantile(sim_list_untune, [0.1, 0.2, 0.5, 0.8, 0.9])
         print(quantiles_fail)
-    return results
+    return results, prediction_log
 
 
 def main():
@@ -732,7 +738,9 @@ def main():
     parser.add_argument("--startswith", action="store_true", help="Wither to report match if generated starts with ground-truth.")
     parser.add_argument("--plain", action="store_true", help="When set, do not apply chat format, and append `<|perception|>` to the prompt.")
     parser.add_argument("--spider_path", type=str, default="", help="Path to spider databases.")
-    
+    parser.add_argument("--wandb", action="store_true", help="Log prediction table to Weights & Biases.")
+    parser.add_argument("--wandb_run_name", type=str, default=None, help="W&B run name.")
+
     args = parser.parse_args()
     
     # Validate arguments
@@ -794,6 +802,14 @@ def main():
         # Process single file
         files_to_process = [('full', args.input_file, args.output_file)]
     
+    if args.wandb:
+        import wandb
+        wandb.init(
+            project="llm-jepa",
+            name=args.wandb_run_name or f"eval_{args.model_name.split('/')[-1]}",
+            config=vars(args),
+        )
+
     # Load model and tokenizer
     print("\n1. Loading model and tokenizer...")
     model, tokenizer = load_model_and_tokenizer(
@@ -832,7 +848,7 @@ def main():
     for split_name, input_file, output_file in files_to_process:
         print(f"\n--- Processing {split_name} set: {input_file} -> {output_file} ---")
         
-        results = process_dataset(
+        results, prediction_log = process_dataset(
             input_file=input_file,
             output_file=output_file,
             original_model_name=args.original_model_name,
@@ -855,7 +871,15 @@ def main():
             plain=args.plain,
             model_name=args.model_name,
         )
-        
+
+        if args.wandb and prediction_log:
+            import wandb
+            table = wandb.Table(columns=["prompt", "ground_truth", "prediction", "correct"])
+            for entry in prediction_log:
+                table.add_data(entry["prompt"], entry["ground_truth"], entry["prediction"], entry["correct"])
+            accuracy = sum(e["correct"] for e in prediction_log) / len(prediction_log)
+            wandb.log({f"{split_name}/predictions": table, f"{split_name}/accuracy": accuracy})
+
         all_results[split_name] = results
     
     print("\n🎉 Generation complete!")
