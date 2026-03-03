@@ -9,4 +9,4 @@ torchrun --nproc_per_node=$NGPUS finetune.py \
   --num_epochs=4 --finetune_seed=82 --regular \
   --model_name=Qwen/Qwen3-8B --learning_rate=4e-5 \
   --lora --lora_rank=256 --batch_size=8 --grad_accum=8 \
-  --eval_accuracy --wandb --no_save
+  --eval_accuracy --wandb --no_save --max_eval_samples=50

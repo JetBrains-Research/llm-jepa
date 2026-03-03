@@ -661,6 +661,43 @@ class RepresentationTrainer(Trainer):
             'assistant_hidden_states': assistant_hidden_states,
         }
 
+    def evaluate(self, *args, **kwargs):
+        eval_dataloader = self.get_eval_dataloader()
+        model = self.model
+        was_training = model.training
+        model.eval()
+
+        lm_losses, jepa_losses, cosine_sims = [], [], []
+        self._eval_metrics = {'lm_loss': lm_losses, 'jepa_loss': jepa_losses, 'cosine_similarity': cosine_sims}
+
+        for inputs in eval_dataloader:
+            inputs = self._prepare_inputs(inputs)
+            with torch.no_grad():
+                self.compute_loss(model, inputs)
+
+        if was_training:
+            model.train()
+
+        del self._eval_metrics
+
+        result = {}
+        if lm_losses:
+            n = len(lm_losses)
+            result["eval_lm_loss"] = sum(lm_losses) / n
+            if jepa_losses:
+                result["eval_jepa_loss"] = sum(jepa_losses) / len(jepa_losses)
+                result["eval_cosine_similarity"] = sum(cosine_sims) / len(cosine_sims)
+
+        if torch.cuda.current_device() == 0 and result:
+            try:
+                import wandb
+                if wandb.run is not None:
+                    wandb.log({"eval/" + k.removeprefix("eval_"): v for k, v in result.items()})
+            except ImportError:
+                pass
+
+        return result
+
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         """
         Compute loss with additional regularization terms.
@@ -733,7 +770,13 @@ class RepresentationTrainer(Trainer):
         if self.debug == 5 and torch.cuda.current_device() == 0:
             print(f"llm_loss: {lm_loss.float()}, jepa_loss: {jepa_loss.float()}")
 
-        if torch.cuda.current_device() == 0:
+        if hasattr(self, '_eval_metrics'):
+            self._eval_metrics['lm_loss'].append(lm_loss.float().item())
+            if user_hidden_states is not None:
+                self._eval_metrics['jepa_loss'].append(jepa_loss.float().item() if isinstance(jepa_loss, torch.Tensor) else float(jepa_loss))
+                self._eval_metrics['cosine_similarity'].append(torch.mean(cosine_similarity).float().item())
+
+        if model.training and torch.cuda.current_device() == 0:
             try:
                 import wandb
                 if wandb.run is not None:
@@ -1050,6 +1093,7 @@ def main():
                 args.max_length, regular=args.regular,
                 debug=args.debug, train_all=args.train_all, plain=args.plain,
                 front_pred=args.front_pred, reverse_pred=args.reverse_pred)
+            torch.distributed.barrier() if torch.distributed.is_initialized() else None
             if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
                 os.remove(eval_split_file)
             if torch.cuda.current_device() == 0:
@@ -1227,6 +1271,10 @@ def main():
             print("ERROR: No parameters require gradients!")
         else:
             print("First few trainable params:", trainable_params[:5])
+
+    # Baseline eval before training
+    if eval_dataset:
+        trainer.evaluate()
 
     # Start training
     if torch.cuda.current_device() == 0:
