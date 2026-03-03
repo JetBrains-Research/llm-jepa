@@ -56,24 +56,25 @@ def log(msg: str):
 
 
 def split_test_file(n_chunks: int) -> list[str]:
-    """Split gsm8k_test.jsonl into n_chunks, return list of chunk paths."""
-    os.makedirs(CHUNKS_DIR, exist_ok=True)
-    src = "gsm8k_test.jsonl"
-    with open(src) as f:
-        lines = f.readlines()
-
-    total = len(lines)
-    size  = (total + n_chunks - 1) // n_chunks
-    paths = []
-    for i in range(n_chunks):
-        chunk_lines = lines[i * size : (i + 1) * size]
-        # keep "gsm8k" in filename so evaluate.py detects the dataset
-        path = os.path.join(CHUNKS_DIR, f"gsm8k_eval_chunk_{i}.jsonl")
-        with open(path, "w") as f:
-            f.writelines(chunk_lines)
-        paths.append(path)
-    log(f"Split {total} examples into {n_chunks} chunks of ≤{size}")
-    return paths
+    pass
+    # """Split gsm8k_test.jsonl into n_chunks, return list of chunk paths."""
+    # os.makedirs(CHUNKS_DIR, exist_ok=True)
+    # src = "gsm8k_test.jsonl"
+    # with open(src) as f:
+    #     lines = f.readlines()
+    #
+    # total = len(lines)
+    # size  = (total + n_chunks - 1) // n_chunks
+    # paths = []
+    # for i in range(n_chunks):
+    #     chunk_lines = lines[i * size : (i + 1) * size]
+    #     # keep "gsm8k" in filename so evaluate.py detects the dataset
+    #     path = os.path.join(CHUNKS_DIR, f"gsm8k_eval_chunk_{i}.jsonl")
+    #     with open(path, "w") as f:
+    #         f.writelines(chunk_lines)
+    #     paths.append(path)
+    # log(f"Split {total} examples into {n_chunks} chunks of ≤{size}")
+    # return paths
 
 
 def launch_training(method: str, gpu_ids: str, port: int) -> subprocess.Popen:
