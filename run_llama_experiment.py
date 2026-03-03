@@ -27,7 +27,7 @@ import numpy as np
 
 # ── Config ──────────────────────────────────────────────────────────────────
 MODEL        = "meta-llama/Llama-3.2-1B-Instruct"
-DATASET      = "gsm8k"
+DATASET      = "mbpp"
 SEED         = 82
 LAST_TOKEN   = -2
 LR           = 1e-5
@@ -44,8 +44,8 @@ CHUNKS_DIR   = f"results/{DATASET}_llama/eval_chunks"
 VENV         = ".venv/bin"
 
 # Which GPU pairs to use for training
-REGULAR_GPUS = "0,1"   # torchrun will use these
-JEPA_GPUS    = "2,3"
+REGULAR_GPUS = "1,2"   # torchrun will use these
+JEPA_GPUS    = "3,4"
 EVAL_GPUS    = [0, 1, 2, 3]   # all 4 for evaluation
 # ────────────────────────────────────────────────────────────────────────────
 
