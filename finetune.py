@@ -4,7 +4,7 @@
 import copy
 import math
 import os
-# import re
+import re
 import time
 from dotenv import load_dotenv
 load_dotenv()
@@ -13,6 +13,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.profiler import profile, ProfilerActivity
 import json
+from tqdm import tqdm
 from datasets import load_dataset
 import shutil
 from transformers import (
@@ -83,6 +84,10 @@ def load_and_prepare_dataset(data_file, tokenizer, model_name,
         assistant_labels_list = []
         assistant_attention_mask_list = []
 
+        chat_template_kwargs = {}
+        if "Qwen3" in model_name:
+            chat_template_kwargs["enable_thinking"] = False
+
         for msg_idx, messages in enumerate(examples['messages']):
             # Apply chat template if available, otherwise format manually
             full_messages = get_messages(model_name, messages)
@@ -96,6 +101,7 @@ def load_and_prepare_dataset(data_file, tokenizer, model_name,
                     full_messages,
                     tokenize=False,
                     add_generation_prompt=False,
+                    **chat_template_kwargs,
                 )
             
             # Tokenize the formatted conversation with padding to max_length
@@ -144,6 +150,7 @@ def load_and_prepare_dataset(data_file, tokenizer, model_name,
                     user_messages,
                     tokenize=False,
                     add_generation_prompt=False,
+                    **chat_template_kwargs,
                 )
             tokenized_user = tokenizer(
                 formatted_chat_user,
@@ -173,6 +180,7 @@ def load_and_prepare_dataset(data_file, tokenizer, model_name,
                     assistant_messages,
                     tokenize=False,
                     add_generation_prompt=False,
+                    **chat_template_kwargs,
                 )
             tokenized_assistant = tokenizer(
                 formatted_chat_assistant,
@@ -653,6 +661,46 @@ class RepresentationTrainer(Trainer):
             'assistant_hidden_states': assistant_hidden_states,
         }
 
+    def evaluate(self, *args, **kwargs):
+        eval_dataloader = self.get_eval_dataloader()
+        model = self.model
+        was_training = model.training
+        model.eval()
+
+        lm_losses, jepa_losses, cosine_sims, losses = [], [], [], []
+        self._eval_metrics = {'lm_loss': lm_losses, 'jepa_loss': jepa_losses, 'cosine_similarity': cosine_sims, 'loss': losses}
+
+        for inputs in eval_dataloader:
+            inputs = self._prepare_inputs(inputs)
+            with torch.no_grad():
+                self.compute_loss(model, inputs)
+
+        if was_training:
+            model.train()
+
+        del self._eval_metrics
+
+        result = {}
+        if lm_losses:
+            n = len(lm_losses)
+            result["eval_lm_loss"] = sum(lm_losses) / n
+            result["eval_loss"] = sum(losses) / len(losses)
+            if jepa_losses:
+                result["eval_jepa_loss"] = sum(jepa_losses) / len(jepa_losses)
+                result["eval_cosine_similarity"] = sum(cosine_sims) / len(cosine_sims)
+
+        if torch.cuda.current_device() == 0 and result:
+            try:
+                import wandb
+                if wandb.run is not None:
+                    log_dict = {"eval/" + k.removeprefix("eval_"): v for k, v in result.items()}
+                    log_dict["train/global_step"] = self.state.global_step
+                    wandb.log(log_dict)
+            except ImportError:
+                pass
+
+        return result
+
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         """
         Compute loss with additional regularization terms.
@@ -725,7 +773,14 @@ class RepresentationTrainer(Trainer):
         if self.debug == 5 and torch.cuda.current_device() == 0:
             print(f"llm_loss: {lm_loss.float()}, jepa_loss: {jepa_loss.float()}")
 
-        if torch.cuda.current_device() == 0:
+        if hasattr(self, '_eval_metrics'):
+            self._eval_metrics['lm_loss'].append(lm_loss.float().item())
+            self._eval_metrics['loss'].append(total_loss.float().item())
+            if user_hidden_states is not None:
+                self._eval_metrics['jepa_loss'].append(jepa_loss.float().item() if isinstance(jepa_loss, torch.Tensor) else float(jepa_loss))
+                self._eval_metrics['cosine_similarity'].append(torch.mean(cosine_similarity).float().item())
+
+        if model.training and torch.cuda.current_device() == 0:
             try:
                 import wandb
                 if wandb.run is not None:
@@ -767,6 +822,120 @@ class ProfilerFLOPCallback(TrainerCallback):
                 print(f"Step {state.global_step}: FLOPs: {step_flops:,.0f}")
 
 
+_gsm8k_pattern = re.compile(r"\n#### (.+)$")
+
+
+def _eval_generated(generated, messages, input_file):
+    """Evaluate generated response against ground truth (reuses evaluate.py logic)."""
+    basename = os.path.basename(input_file)
+    if "gsm8k" in basename:
+        gt_match = re.search(_gsm8k_pattern, messages[2]["content"])
+        gt_answer = None if not gt_match else gt_match.group(1)
+        gen_match = re.search(_gsm8k_pattern, generated)
+        gen_answer = None if not gen_match else gen_match.group(1)
+        return gt_answer == gen_answer
+    if basename.startswith("spider") or basename.startswith("nq_open"):
+        return generated == messages[2]["content"]
+    return generated == messages[2]["content"]
+
+
+class EvalAccuracyCallback(TrainerCallback):
+    """Generation-based eval at end of each epoch and/or every N steps, logs accuracy to W&B."""
+
+    def __init__(self, eval_examples, tokenizer, model_name, input_file, max_new_tokens=512):
+        self.eval_examples = eval_examples
+        self.tokenizer = tokenizer
+        self.model_name = model_name
+        self.input_file = input_file
+        self.max_new_tokens = max_new_tokens
+        self.chat_template_kwargs = {}
+        if "Qwen3" in model_name:
+            self.chat_template_kwargs["enable_thinking"] = False
+
+    def _format_prompt(self, messages):
+        full_messages = get_messages(self.model_name, messages)
+        filtered = [msg for msg in full_messages if msg["role"] != "assistant"]
+        return self.tokenizer.apply_chat_template(
+            filtered, tokenize=False, add_generation_prompt=True,
+            **self.chat_template_kwargs,
+        )
+
+    def _generate(self, model, prompt):
+        inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512)
+        if hasattr(model, "device"):
+            inputs = {k: v.to(model.device) for k, v in inputs.items()}
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                pad_token_id=self.tokenizer.pad_token_id,
+                eos_token_id=self.tokenizer.eos_token_id,
+                do_sample=False,
+                max_new_tokens=self.max_new_tokens,
+            )
+        generated_tokens = outputs[0][len(inputs["input_ids"][0]):]
+        return self.tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
+
+    def _run_eval(self, state, model, label="epoch"):
+        if model is not None:
+            eval_model = model.module if hasattr(model, "module") else model
+            eval_model.eval()
+            old_use_cache = getattr(eval_model.config, "use_cache", False)
+            eval_model.config.use_cache = True
+
+            rank = torch.cuda.current_device()
+            world_size = int(os.environ.get('WORLD_SIZE', 1))
+            my_examples = self.eval_examples[rank::world_size]
+
+            local_correct = 0
+            table_rows = []
+            for example in tqdm(my_examples, desc=f"Eval generation (rank {rank})", disable=(rank != 0)):
+                messages = example["messages"]
+                prompt = self._format_prompt(messages)
+                generated = self._generate(eval_model, prompt)
+                is_correct = _eval_generated(generated, messages, self.input_file)
+                if is_correct:
+                    local_correct += 1
+                table_rows.append([messages[1]["content"], messages[2]["content"], generated, is_correct])
+
+            eval_model.config.use_cache = old_use_cache
+            eval_model.train()
+
+            if torch.distributed.is_initialized():
+                correct_tensor = torch.tensor(local_correct, device=f"cuda:{rank}")
+                torch.distributed.all_reduce(correct_tensor)
+                correct = correct_tensor.item()
+            else:
+                correct = local_correct
+
+            total = len(self.eval_examples)
+            accuracy = correct / total if total > 0 else 0.0
+
+            if rank == 0:
+                print(f"Eval accuracy ({label} step={state.global_step}): {accuracy:.4f} ({correct}/{total})")
+                try:
+                    import wandb
+                    if wandb.run is not None:
+                        table = wandb.Table(
+                            columns=["input", "ground_truth", "prediction", "correct"],
+                            data=table_rows,
+                        )
+                        wandb.log({"eval/accuracy": accuracy, "eval/correct": correct,
+                                   "eval/total": total, "eval/predictions": table,
+                                   "train/global_step": state.global_step})
+                except ImportError:
+                    pass
+
+    def on_train_begin(self, args, state, control, model=None, **kwargs):
+        self._run_eval(state, model, label="start")
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()
+
+    def on_epoch_end(self, args, state, control, model=None, **kwargs):
+        self._run_eval(state, model, label="epoch")
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Fine-tune Gemma-3-1B")
     parser.add_argument("--train_file", type=str, help="Path to training JSONL file")
@@ -782,7 +951,7 @@ def main():
     parser.add_argument("--eval_steps", type=int, default=10, help="Evaluation steps")
     parser.add_argument("--lora", action="store_true", help="Enable LoRA (default: full fine-tuning)")
     parser.add_argument("--lora_rank", type=int, default=16, help="LoRA rank. Default: 16.")
-    parser.add_argument("--eval_split", type=float, default=0.2, help="Evaluation split ratio (if using single data file)")
+    parser.add_argument("--eval_split", type=float, default=0.05, help="Evaluation split ratio (if using single data file)")
     parser.add_argument("--split_seed", type=int, default=42, help="Random seed for train/eval split")
     parser.add_argument("--finetune_seed", type=int, default=42, help="Random seed for fine-tuning")
     parser.add_argument("--predictors", type=int, default=0, help="Number of predictor tokens")
@@ -807,6 +976,9 @@ def main():
     parser.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging.")
     parser.add_argument("--wandb_project", type=str, default="llm-jepa", help="W&B project name.")
     parser.add_argument("--wandb_run_name", type=str, default=None, help="W&B run name. Auto-generated if not set.")
+    parser.add_argument("--eval_accuracy", action="store_true", help="Run generation-based eval at end of each epoch (splits 20%% from train data).")
+    parser.add_argument("--max_new_tokens_eval", type=int, default=256, help="Max new tokens for eval generation.")
+    parser.add_argument("--max_eval_samples", type=int, default=50, help="Max samples for generation-based eval (0=all).")
 
     args = parser.parse_args()
     
@@ -843,7 +1015,8 @@ def main():
         if torch.cuda.current_device() == 0:
             print(f"Running with torchrun: world_size={world_size}, local_rank={local_rank}")
         # Initialize distributed training
-        torch.distributed.init_process_group(backend='nccl')
+        import datetime
+        torch.distributed.init_process_group(backend='nccl', timeout=datetime.timedelta(minutes=30))
         torch.cuda.set_device(local_rank)
 
     if args.wandb and local_rank == 0:
@@ -855,7 +1028,9 @@ def main():
         run_name = args.wandb_run_name or (
             f"{args.model_name.split('/')[-1]}"
             f"_{'jepa' if not args.regular else 'regular'}"
-            f"_lr{args.learning_rate}_lbd{args.lbd}"
+            f"_lr{args.learning_rate}"
+            f"{'_lbd' + str(args.lbd) if not args.regular else ''}"
+            f"{'_lora' + str(args.lora_rank) if args.lora else ''}"
             f"_s{args.finetune_seed}"
         )
         wandb.init(project=args.wandb_project, name=run_name, config=vars(args))
@@ -873,16 +1048,37 @@ def main():
     if torch.cuda.current_device() == 0:
         print("\n2. Loading and preparing dataset...")
     
+    eval_raw_examples = None
     if args.train_file:
+        train_file_path = args.train_file
+
+        if args.eval_accuracy:
+            raw_dataset = load_dataset('json', data_files=args.train_file)['train']
+            split = raw_dataset.train_test_split(
+                test_size=args.eval_split, seed=args.finetune_seed, shuffle=True)
+            eval_raw_examples = [dict(ex) for ex in split['test']]
+            train_split_file = args.train_file + '.train_split.jsonl'
+            with open(train_split_file, 'w') as f:
+                for ex in split['train']:
+                    f.write(json.dumps(dict(ex)) + '\n')
+            train_file_path = train_split_file
+            if torch.cuda.current_device() == 0:
+                print(f"Split {len(raw_dataset)} examples: {len(split['train'])} train, {len(eval_raw_examples)} eval")
+
         # Load separate train and eval files
         if torch.cuda.current_device() == 0:
-            print(f"Loading training data from {args.train_file}")
+            print(f"Loading training data from {train_file_path}")
         train_dataset = load_and_prepare_dataset(
-            args.train_file, tokenizer, args.model_name,
+            train_file_path, tokenizer, args.model_name,
             args.max_length, predictors=args.predictors, regular=args.regular,
             debug=args.debug, train_all=args.train_all, plain=args.plain,
             front_pred=args.front_pred, reverse_pred=args.reverse_pred)
-        
+
+        if args.eval_accuracy:
+            torch.distributed.barrier() if torch.distributed.is_initialized() else None
+            if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+                os.remove(train_split_file)
+
         if args.eval_file:
             if torch.cuda.current_device() == 0:
                 print(f"Loading evaluation data from {args.eval_file}")
@@ -891,6 +1087,21 @@ def main():
                 args.max_length, regular=args.regular,
                 debug=args.debug, train_all=args.train_all, plain=args.plain,
                 front_pred=args.front_pred, reverse_pred=args.reverse_pred)
+        elif args.eval_accuracy and eval_raw_examples:
+            eval_split_file = args.train_file + '.eval_split.jsonl'
+            with open(eval_split_file, 'w') as f:
+                for ex in eval_raw_examples:
+                    f.write(json.dumps(ex) + '\n')
+            eval_dataset = load_and_prepare_dataset(
+                eval_split_file, tokenizer, args.model_name,
+                args.max_length, regular=args.regular,
+                debug=args.debug, train_all=args.train_all, plain=args.plain,
+                front_pred=args.front_pred, reverse_pred=args.reverse_pred)
+            torch.distributed.barrier() if torch.distributed.is_initialized() else None
+            if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+                os.remove(eval_split_file)
+            if torch.cuda.current_device() == 0:
+                print(f"Using {len(eval_raw_examples)} eval examples for loss calculation")
         else:
             eval_dataset = None
             if torch.cuda.current_device() == 0:
@@ -955,14 +1166,13 @@ def main():
 
         # Training parameters
         per_device_train_batch_size=args.batch_size,
-        per_device_eval_batch_size=args.batch_size,
+        per_device_eval_batch_size=1,
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.learning_rate,
         num_train_epochs=args.num_epochs,
         
         # Evaluation
-        eval_strategy="no",  # "steps" if eval_dataset else "no",
-        # eval_steps=eval_steps,
+        eval_strategy="epoch" if eval_dataset else "no",
         
         # Saving
         save_strategy="no" if args.no_save else "steps",
@@ -994,7 +1204,7 @@ def main():
         report_to="wandb" if args.wandb else "none",
         run_name=args.wandb_run_name if args.wandb else None,
         remove_unused_columns=False,
-        load_best_model_at_end=True if (eval_dataset and not args.no_save) else False,
+        load_best_model_at_end=False,
         
         # Disable problematic optimizations
         tf32=False,  # May help with stability
@@ -1005,6 +1215,15 @@ def main():
     )
     
     flop_callback = ProfilerFLOPCallback()
+
+    callbacks = []
+    if args.track_flop:
+        callbacks.append(flop_callback)
+    if eval_raw_examples:
+        eval_subset = eval_raw_examples[:args.max_eval_samples] if args.max_eval_samples > 0 else eval_raw_examples
+        callbacks.append(EvalAccuracyCallback(
+            eval_subset, tokenizer, args.model_name,
+            args.train_file, max_new_tokens=args.max_new_tokens_eval))
 
     # Initialize trainer
     if args.regular:
@@ -1017,7 +1236,7 @@ def main():
             eval_dataset=eval_dataset,
             processing_class=tokenizer,
             data_collator=data_collator,
-            callbacks=[flop_callback] if args.track_flop else [],
+            callbacks=callbacks,
         )
     else:
         if torch.cuda.current_device() == 0:
@@ -1029,7 +1248,7 @@ def main():
             eval_dataset=eval_dataset,
             processing_class=tokenizer,
             data_collator=data_collator,
-            callbacks=[flop_callback] if args.track_flop else [],
+            callbacks=callbacks,
             lbd=args.lbd,
             gamma=args.gamma,
             last_token=args.last_token,
@@ -1040,7 +1259,11 @@ def main():
             infonce=args.infonce,
             jepa_ratio=args.jepa_ratio,
         )
-    
+
+    for cb in callbacks:
+        if isinstance(cb, EvalAccuracyCallback):
+            cb.trainer = trainer
+
     if torch.cuda.current_device() == 0 and args.lora:
         print("=== PEFT Model Check ===")
         model.print_trainable_parameters()
