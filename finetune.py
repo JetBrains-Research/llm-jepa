@@ -5,6 +5,7 @@ import copy
 import math
 import os
 import re
+import subprocess
 import time
 from dotenv import load_dotenv
 load_dotenv()
@@ -827,10 +828,30 @@ class ProfilerFLOPCallback(TrainerCallback):
 
 
 _gsm8k_pattern = re.compile(r"\n#### (.+)$")
+_spider_db_pattern = re.compile(r"For db_id:\[(.+)\]")
 
 
-def _eval_generated(generated, messages, input_file):
-    """Evaluate generated response against ground truth (reuses evaluate.py logic)."""
+def _spider_eval(generated, messages, spider_path):
+    """Evaluate Spider by executing both SQL queries and comparing results."""
+    db_id = re.search(_spider_db_pattern, messages[1]["content"])
+    if not db_id:
+        return False
+    db_id = db_id.group(1)
+    dbfile = os.path.join(spider_path, db_id, db_id + '.sqlite')
+    try:
+        gen_result = subprocess.run(
+            ["sqlite3", dbfile, generated], capture_output=True, text=True,
+        ).stdout
+        gt_result = subprocess.run(
+            ["sqlite3", dbfile, messages[2]["content"]], capture_output=True, text=True,
+        ).stdout
+    except Exception:
+        return False
+    return gen_result == gt_result
+
+
+def _eval_generated(generated, messages, input_file, spider_path=""):
+    """Evaluate generated response against ground truth."""
     basename = os.path.basename(input_file)
     if "gsm8k" in basename:
         gt_match = re.search(_gsm8k_pattern, messages[2]["content"])
@@ -838,20 +859,21 @@ def _eval_generated(generated, messages, input_file):
         gen_match = re.search(_gsm8k_pattern, generated)
         gen_answer = None if not gen_match else gen_match.group(1)
         return gt_answer == gen_answer
-    if basename.startswith("spider") or basename.startswith("nq_open"):
-        return generated == messages[2]["content"]
+    if basename.startswith("spider") and spider_path:
+        return _spider_eval(generated, messages, spider_path)
     return generated == messages[2]["content"]
 
 
 class EvalAccuracyCallback(TrainerCallback):
     """Generation-based eval at end of each epoch and/or every N steps, logs accuracy to W&B."""
 
-    def __init__(self, eval_examples, tokenizer, model_name, input_file, max_new_tokens=512):
+    def __init__(self, eval_examples, tokenizer, model_name, input_file, max_new_tokens=512, spider_path=""):
         self.eval_examples = eval_examples
         self.tokenizer = tokenizer
         self.model_name = model_name
         self.input_file = input_file
         self.max_new_tokens = max_new_tokens
+        self.spider_path = spider_path
         self.chat_template_kwargs = {}
         if "Qwen3" in model_name:
             self.chat_template_kwargs["enable_thinking"] = False
@@ -896,7 +918,7 @@ class EvalAccuracyCallback(TrainerCallback):
                 messages = example["messages"]
                 prompt = self._format_prompt(messages)
                 generated = self._generate(eval_model, prompt)
-                is_correct = _eval_generated(generated, messages, self.input_file)
+                is_correct = _eval_generated(generated, messages, self.input_file, self.spider_path)
                 if is_correct:
                     local_correct += 1
                 table_rows.append([messages[1]["content"], messages[2]["content"], generated, is_correct])
@@ -983,6 +1005,7 @@ def main():
     parser.add_argument("--eval_accuracy", action="store_true", help="Run generation-based eval at end of each epoch (splits 20%% from train data).")
     parser.add_argument("--max_new_tokens_eval", type=int, default=256, help="Max new tokens for eval generation.")
     parser.add_argument("--max_eval_samples", type=int, default=50, help="Max samples for generation-based eval (0=all).")
+    parser.add_argument("--spider_path", type=str, default="", help="Path to Spider databases (for SQL execution eval).")
 
     args = parser.parse_args()
     
@@ -1227,7 +1250,8 @@ def main():
         eval_subset = eval_raw_examples[:args.max_eval_samples] if args.max_eval_samples > 0 else eval_raw_examples
         callbacks.append(EvalAccuracyCallback(
             eval_subset, tokenizer, args.model_name,
-            args.train_file, max_new_tokens=args.max_new_tokens_eval))
+            args.train_file, max_new_tokens=args.max_new_tokens_eval,
+            spider_path=args.spider_path))
 
     # Initialize trainer
     if args.regular:

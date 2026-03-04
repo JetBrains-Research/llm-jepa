@@ -16,6 +16,7 @@ wandb/
 # Downloaded / generated data files in root
 gsm8k_test.jsonl
 spider_data.zip
+spider_data/
 
 # Python
 __pycache__/

@@ -735,6 +735,7 @@ def main():
     parser.add_argument("--plain", action="store_true", help="When set, do not apply chat format, and append `<|perception|>` to the prompt.")
     parser.add_argument("--spider_path", type=str, default="", help="Path to spider databases.")
     parser.add_argument("--wandb", action="store_true", help="Log prediction table to Weights & Biases.")
+    parser.add_argument("--wandb_project", type=str, default="llm-jepa", help="W&B project name.")
     parser.add_argument("--wandb_run_name", type=str, default=None, help="W&B run name.")
 
     args = parser.parse_args()
@@ -801,7 +802,7 @@ def main():
     if args.wandb:
         import wandb
         wandb.init(
-            project="llm-jepa",
+            project=args.wandb_project,
             name=args.wandb_run_name or f"eval_{args.model_name.split('/')[-1]}",
             config=vars(args),
         )
