@@ -173,3 +173,77 @@ Outputs:
 
 * `mbpp_pass1_results.jsonl`: per-example pass/fail and error type.
 * `mbpp_pass1_summary.json`: aggregate `pass@1` and error counts.
+
+## Codeforces Setup and Training (No Evaluation)
+
+This section prepares `open-r1/codeforces` for supervised fine-tuning and runs Qwen3-8B training.
+
+Important: this dataset does not expose a canonical accepted solution code field in every subset.  
+By default, the prep script uses `editorial` as the assistant target text.
+
+### 1. Prepare Codeforces dataset
+
+```bash
+source .venv/bin/activate
+
+python scripts/prepare_codeforces_dataset.py \
+  --dataset open-r1/codeforces \
+  --config verifiable-problems \
+  --assistant-fields editorial \
+  --output-dir datasets \
+  --train-file codeforces_train.jsonl \
+  --test-file codeforces_test.jsonl
+```
+
+Optional 90/10 random split:
+
+```bash
+python scripts/prepare_codeforces_dataset.py \
+  --dataset open-r1/codeforces \
+  --config verifiable-problems \
+  --assistant-fields editorial \
+  --output-dir datasets \
+  --train-file codeforces_train.jsonl \
+  --test-file codeforces_test.jsonl \
+  --resplit-test-size 0.1 \
+  --split-seed 42
+```
+
+### 2. Train Qwen3-8B regular
+
+```bash
+scripts/qwen3_8b_regular_codeforces.sh
+```
+
+Common overrides:
+
+```bash
+MODEL_NAME=Qwen/Qwen3-8B \
+TRAIN_FILE=datasets/codeforces_train.jsonl \
+OUTPUT_DIR=./fine-tuned-codeforces-regular \
+CUDA_VISIBLE_DEVICES=2,3 \
+WANDB_ENABLED=1 \
+scripts/qwen3_8b_regular_codeforces.sh
+```
+
+### 3. Train Qwen3-8B JEPA
+
+```bash
+scripts/qwen3_8b_jepa_codeforces.sh
+```
+
+Common overrides:
+
+```bash
+MODEL_NAME=Qwen/Qwen3-8B \
+TRAIN_FILE=datasets/codeforces_train.jsonl \
+OUTPUT_DIR=./fine-tuned-codeforces-jepa \
+LBD=1.0 \
+PREDICTORS=1 \
+LAST_TOKEN=-3 \
+CUDA_VISIBLE_DEVICES=2,3 \
+WANDB_ENABLED=1 \
+scripts/qwen3_8b_jepa_codeforces.sh
+```
+
+No evaluation is run in these Codeforces scripts by design.
