@@ -4,9 +4,8 @@ version = "0.1.0"
 description = "LLM JEPA experiments"
 requires-python = ">=3.12"
 dependencies = [
-    "torch>=2.10.0",
-    "torchvision>=0.25.0",
-    "transformers>=5.0.0",
+    "torch>=2.9.0",
+    "transformers>=4.56.0,<5",
     "datasets>=4.0.0",
     "peft>=0.18.0",
     "safetensors>=0.7.0",
@@ -14,12 +13,13 @@ dependencies = [
     "tqdm>=4.67.0",
     "matplotlib>=3.10.0",
     "scikit-learn>=1.8.0",
-    "numpy>=2.3.0",
+    "numpy>=1.26.0",
     "scipy>=1.17.0",
     "python-dotenv>=1.2.0",
     "protobuf>=6.0.0",
     "sentencepiece>=0.2.0",
     "wandb>=0.25.0",
+    "vllm>=0.8.0",
 ]
 
 [tool.uv.sources]
