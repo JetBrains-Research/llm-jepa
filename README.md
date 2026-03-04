@@ -188,7 +188,7 @@ source .venv/bin/activate
 
 python scripts/prepare_codeforces_dataset.py \
   --dataset open-r1/codeforces \
-  --config verifiable-problems \
+  --config verifiable \
   --assistant-fields editorial \
   --output-dir datasets \
   --train-file codeforces_train.jsonl \
@@ -200,7 +200,7 @@ Optional 90/10 random split:
 ```bash
 python scripts/prepare_codeforces_dataset.py \
   --dataset open-r1/codeforces \
-  --config verifiable-problems \
+  --config verifiable \
   --assistant-fields editorial \
   --output-dir datasets \
   --train-file codeforces_train.jsonl \
@@ -208,6 +208,8 @@ python scripts/prepare_codeforces_dataset.py \
   --resplit-test-size 0.1 \
   --split-seed 42
 ```
+
+`--config verifiable-problems` is also accepted as a legacy alias and maps to `verifiable`.
 
 ### 2. Train Qwen3-8B regular
 

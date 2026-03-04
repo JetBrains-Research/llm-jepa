@@ -20,11 +20,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--config",
-        default="verifiable-problems",
+        default="verifiable",
         help=(
             "Dataset config/subset name "
-            "(default: verifiable-problems; alternatives include "
-            "verifiable-prompts, livecodebench-v6)."
+            "(default: verifiable; alternatives include default, "
+            "verifiable-prompts)."
         ),
     )
     parser.add_argument(
@@ -123,13 +123,26 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_codeforces_dataset(dataset_name: str, config: str | None) -> DatasetDict:
+    alias_map = {
+        "verifiable-problems": "verifiable",
+    }
+
     if config:
-        return load_dataset(dataset_name, config)
+        normalized = alias_map.get(config, config)
+        tried = []
+        for cfg in [normalized, config]:
+            if cfg in tried:
+                continue
+            tried.append(cfg)
+            try:
+                return load_dataset(dataset_name, cfg)
+            except Exception:
+                continue
 
     try:
         return load_dataset(dataset_name)
     except Exception:
-        for fallback in ("verifiable-problems", "verifiable-prompts", "livecodebench-v6"):
+        for fallback in ("verifiable", "verifiable-prompts", "default"):
             try:
                 return load_dataset(dataset_name, fallback)
             except Exception:
