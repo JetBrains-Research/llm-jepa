@@ -32,7 +32,6 @@ torch.set_float32_matmul_precision('high')
 # Suppress specific warning
 import warnings
 
-warnings.filterwarnings("ignore", message="The following generation flags are not valid")
 
 
 # def use_llama_3_2_chat_template(tokenizer):
@@ -327,10 +326,7 @@ def generate_response(model, tokenizer, prompt, generation_config, max_new_token
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
-            # generation_config=generation_config,
-            pad_token_id=tokenizer.pad_token_id,
-            eos_token_id=tokenizer.eos_token_id,
-            do_sample=False,
+            generation_config=generation_config,
             max_new_tokens=max_new_tokens,
         )
     
@@ -824,12 +820,12 @@ def main():
     print("\n2. Setting up generation configuration...")
     generation_config = GenerationConfig(
         model_name=args.model_name,
-        do_sample=False, # args.do_sample,
+        do_sample=True,
         max_new_tokens=args.max_new_tokens,
         max_length=args.max_length,
-        # temperature=args.temperature,
-        # top_p=args.top_p,
-        # top_k=args.top_k,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        top_k=args.top_k,
         repetition_penalty=args.repetition_penalty,
         num_beams=args.num_beams,
         pad_token_id=tokenizer.pad_token_id,

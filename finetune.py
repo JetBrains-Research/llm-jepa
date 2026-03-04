@@ -287,6 +287,10 @@ def load_and_prepare_dataset(data_file, tokenizer, model_name,
                         for j in range(i, min(i + len(assistant_tokens), len(input_ids))):
                             if attention_mask[j] == 1:  # Only unmask non-padding tokens
                                 labels[j] = input_ids[j]
+                        # Also unmask the EOS token right after the assistant response
+                        eos_pos = i + len(assistant_tokens)
+                        if eos_pos < len(input_ids) and attention_mask[eos_pos] == 1:
+                            labels[eos_pos] = input_ids[eos_pos]
                         break
                 
                 if debug == 4:
@@ -842,12 +846,17 @@ def _eval_generated(generated, messages, input_file):
 class EvalAccuracyCallback(TrainerCallback):
     """Generation-based eval at end of each epoch and/or every N steps, logs accuracy to W&B."""
 
-    def __init__(self, eval_examples, tokenizer, model_name, input_file, max_new_tokens=512):
+    def __init__(self, eval_examples, tokenizer, model_name, input_file, max_new_tokens=512,
+                 temperature=0.0, top_p=1.0, top_k=1, do_sample=False):
         self.eval_examples = eval_examples
         self.tokenizer = tokenizer
         self.model_name = model_name
         self.input_file = input_file
         self.max_new_tokens = max_new_tokens
+        self.temperature = temperature
+        self.top_p = top_p
+        self.top_k = top_k
+        self.do_sample = do_sample
         self.chat_template_kwargs = {}
         if "Qwen3" in model_name:
             self.chat_template_kwargs["enable_thinking"] = False
@@ -869,8 +878,11 @@ class EvalAccuracyCallback(TrainerCallback):
                 **inputs,
                 pad_token_id=self.tokenizer.pad_token_id,
                 eos_token_id=self.tokenizer.eos_token_id,
-                do_sample=False,
+                do_sample=self.do_sample,
                 max_new_tokens=self.max_new_tokens,
+                temperature=self.temperature,
+                top_p=self.top_p,
+                top_k=self.top_k,
             )
         generated_tokens = outputs[0][len(inputs["input_ids"][0]):]
         return self.tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
@@ -979,6 +991,10 @@ def main():
     parser.add_argument("--eval_accuracy", action="store_true", help="Run generation-based eval at end of each epoch (splits 20%% from train data).")
     parser.add_argument("--max_new_tokens_eval", type=int, default=256, help="Max new tokens for eval generation.")
     parser.add_argument("--max_eval_samples", type=int, default=50, help="Max samples for generation-based eval (0=all).")
+    parser.add_argument("--temperature", type=float, default=0.0, help="Sampling temperature for eval generation.")
+    parser.add_argument("--top_p", type=float, default=1.0, help="Top-p (nucleus) sampling for eval generation.")
+    parser.add_argument("--top_k", type=int, default=1, help="Top-k sampling for eval generation.")
+    parser.add_argument("--do_sample", action="store_true", help="Whether to use sampling for eval generation.")
 
     args = parser.parse_args()
     
@@ -1223,7 +1239,9 @@ def main():
         eval_subset = eval_raw_examples[:args.max_eval_samples] if args.max_eval_samples > 0 else eval_raw_examples
         callbacks.append(EvalAccuracyCallback(
             eval_subset, tokenizer, args.model_name,
-            args.train_file, max_new_tokens=args.max_new_tokens_eval))
+            args.train_file, max_new_tokens=args.max_new_tokens_eval,
+            temperature=args.temperature, top_p=args.top_p, top_k=args.top_k,
+            do_sample=args.do_sample))
 
     # Initialize trainer
     if args.regular:
