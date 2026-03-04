@@ -35,6 +35,31 @@ def parse_args() -> argparse.Namespace:
         help="MBPP split to use for mbpp_test.jsonl (default: test).",
     )
     parser.add_argument(
+        "--resplit-test-size",
+        type=float,
+        default=None,
+        help=(
+            "Optional random test ratio (e.g. 0.1 for 90/10). "
+            "When set, dataset is re-split from --resplit-source-splits "
+            "(or train+test splits by default)."
+        ),
+    )
+    parser.add_argument(
+        "--resplit-source-splits",
+        nargs="+",
+        default=None,
+        help=(
+            "Source splits used for random re-splitting. "
+            "Default: train splits plus test split."
+        ),
+    )
+    parser.add_argument(
+        "--split-seed",
+        type=int,
+        default=42,
+        help="Random seed for --resplit-test-size split.",
+    )
+    parser.add_argument(
         "--output-dir",
         default="datasets",
         help="Directory where mbpp_train.jsonl and mbpp_test.jsonl are written.",
@@ -162,12 +187,31 @@ def main() -> None:
     args = parse_args()
     dataset = load_mbpp_dataset(args.dataset, args.config)
 
-    train_split = merge_splits(dataset, args.train_splits)
-    if args.test_split not in dataset:
-        raise ValueError(
-            f"Split '{args.test_split}' not found. Available splits: {sorted(dataset.keys())}"
+    if args.resplit_test_size is not None:
+        if not (0.0 < args.resplit_test_size < 1.0):
+            raise ValueError("--resplit-test-size must be in the open interval (0, 1).")
+
+        source_splits = args.resplit_source_splits
+        if source_splits is None:
+            source_splits = list(dict.fromkeys([*args.train_splits, args.test_split]))
+        merged = merge_splits(dataset, source_splits)
+        split = merged.train_test_split(
+            test_size=args.resplit_test_size, seed=args.split_seed, shuffle=True
         )
-    test_split = dataset[args.test_split]
+        train_split = split["train"]
+        test_split = split["test"]
+        print(
+            f"Random split from {source_splits}: "
+            f"{len(train_split)} train / {len(test_split)} test "
+            f"(test_size={args.resplit_test_size}, seed={args.split_seed})"
+        )
+    else:
+        train_split = merge_splits(dataset, args.train_splits)
+        if args.test_split not in dataset:
+            raise ValueError(
+                f"Split '{args.test_split}' not found. Available splits: {sorted(dataset.keys())}"
+            )
+        test_split = dataset[args.test_split]
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)

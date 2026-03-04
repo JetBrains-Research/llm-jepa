@@ -116,6 +116,19 @@ python scripts/prepare_mbpp_dataset.py \
   --keep-metadata
 ```
 
+For a custom random 90/10 split:
+
+```bash
+python scripts/prepare_mbpp_dataset.py \
+  --config sanitized \
+  --output-dir datasets \
+  --train-file mbpp_train.jsonl \
+  --test-file mbpp_test.jsonl \
+  --keep-metadata \
+  --resplit-test-size 0.1 \
+  --split-seed 42
+```
+
 Notes:
 
 * Keep `--keep-metadata` enabled for execution-based eval (`test_list`, `test_setup_code`, etc.).
