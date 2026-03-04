@@ -1,7 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
-CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-2,3}
+if [[ -z "${CUDA_VISIBLE_DEVICES+x}" ]]; then
+  CUDA_VISIBLE_DEVICES="2,3"
+elif [[ -z "${CUDA_VISIBLE_DEVICES}" ]]; then
+  CUDA_VISIBLE_DEVICES="2,3"
+fi
+export CUDA_VISIBLE_DEVICES
 NGPUS=$(echo "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | wc -l | tr -d ' ')
 
 MODEL_NAME=${MODEL_NAME:-Qwen/Qwen3-8B}
