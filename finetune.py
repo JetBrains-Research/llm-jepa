@@ -1041,9 +1041,11 @@ def main():
         base_url = os.environ.get("WANDB_BASE_URL") or os.environ.get("WANDB_API_URL")
         if base_url:
             os.environ["WANDB_BASE_URL"] = base_url
+        dataset_name = os.path.basename(args.train_file or "").replace("_train.jsonl", "").replace(".jsonl", "")
         run_name = args.wandb_run_name or (
             f"{args.model_name.split('/')[-1]}"
             f"_{'jepa' if not args.regular else 'regular'}"
+            f"_{dataset_name}"
             f"_lr{args.learning_rate}"
             f"{'_lbd' + str(args.lbd) if not args.regular else ''}"
             f"{'_lora' + str(args.lora_rank) if args.lora else ''}"
@@ -1218,7 +1220,7 @@ def main():
         
         # Other
         report_to="wandb" if args.wandb else "none",
-        run_name=args.wandb_run_name if args.wandb else None,
+        run_name=run_name if args.wandb else None,
         remove_unused_columns=False,
         load_best_model_at_end=False,
         
