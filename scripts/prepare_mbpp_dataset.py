@@ -59,6 +59,15 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Append test setup and tests to the user prompt.",
     )
+    parser.add_argument(
+        "--keep-metadata",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Keep MBPP metadata fields (task_id/text/test_setup_code/test_list/"
+            "challenge_test_list) for execution-based pass@1 evaluation."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -104,16 +113,29 @@ def build_user_prompt(example: dict, include_tests: bool) -> str:
     return "\n\n".join(parts)
 
 
-def to_messages(example: dict, system_prompt: str, include_tests: bool) -> dict:
+def to_messages(
+    example: dict, system_prompt: str, include_tests: bool, keep_metadata: bool
+) -> dict:
     user_prompt = build_user_prompt(example, include_tests)
     assistant_code = require_field(example, "code")
-    return {
+    row = {
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
             {"role": "assistant", "content": assistant_code},
         ]
     }
+    if keep_metadata:
+        for key in (
+            "task_id",
+            "text",
+            "test_setup_code",
+            "test_list",
+            "challenge_test_list",
+        ):
+            if key in example and example[key] is not None:
+                row[key] = example[key]
+    return row
 
 
 def write_jsonl(path: Path, rows: Iterable[dict]) -> int:
@@ -153,11 +175,11 @@ def main() -> None:
     test_path = output_dir / args.test_file
 
     train_rows = (
-        to_messages(example, args.system_prompt, args.include_tests)
+        to_messages(example, args.system_prompt, args.include_tests, args.keep_metadata)
         for example in train_split
     )
     test_rows = (
-        to_messages(example, args.system_prompt, args.include_tests)
+        to_messages(example, args.system_prompt, args.include_tests, args.keep_metadata)
         for example in test_split
     )
 

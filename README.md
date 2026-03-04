@@ -89,3 +89,74 @@ Most datasets include `_train.jsonl` and `_test.jsonl` files for fine-tuning and
 *  `yelp`, from HuggingFace `Yelp/yelp_review_full` dataset. Used for fine-tuning and evaluating models pretrained by `paraphrase` dataset.
 *  `nq_open`, from https://arxiv.org/abs/1906.00300.
 *  `hellaswag`, from HuggingFace `hellaswag` dataset.
+
+## MBPP Setup and Evaluation
+
+This repo includes utilities to prepare MBPP and evaluate with execution-based `pass@1`.
+
+### 1. Environment setup
+
+1. Follow `setup.sh` instructions to install dependencies.
+2. Activate the virtual environment:
+
+```bash
+source .venv/bin/activate
+```
+
+### 2. Prepare MBPP dataset
+
+Generate `datasets/mbpp_train.jsonl` and `datasets/mbpp_test.jsonl`:
+
+```bash
+python scripts/prepare_mbpp_dataset.py \
+  --config sanitized \
+  --output-dir datasets \
+  --train-file mbpp_train.jsonl \
+  --test-file mbpp_test.jsonl \
+  --keep-metadata
+```
+
+Notes:
+
+* Keep `--keep-metadata` enabled for execution-based eval (`test_list`, `test_setup_code`, etc.).
+* Do not use `--include-tests` for unbiased eval prompts, because it appends tests into the user prompt.
+
+### 3. Train Qwen3-8B (regular) on MBPP
+
+Use the new convenience script:
+
+```bash
+scripts/qwen3_8b_regular_mbpp.sh
+```
+
+Optional overrides:
+
+```bash
+MODEL_NAME=Qwen/Qwen3-8B \
+TRAIN_FILE=datasets/mbpp_train.jsonl \
+TEST_FILE=datasets/mbpp_test.jsonl \
+OUTPUT_DIR=./fine-tuned-mbpp \
+SEED=82 \
+CUDA_VISIBLE_DEVICES=2,3 \
+scripts/qwen3_8b_regular_mbpp.sh
+```
+
+### 4. Run MBPP execution-based pass@1 evaluation directly
+
+You can also run evaluation separately:
+
+```bash
+python evaluate_mbpp_pass1.py \
+  --model_name ./fine-tuned-mbpp \
+  --original_model_name Qwen/Qwen3-8B \
+  --input_file datasets/mbpp_test.jsonl \
+  --output_file fine-tuned-mbpp/mbpp_pass1_results.jsonl \
+  --summary_file fine-tuned-mbpp/mbpp_pass1_summary.json \
+  --max_new_tokens 512 \
+  --timeout_sec 3
+```
+
+Outputs:
+
+* `mbpp_pass1_results.jsonl`: per-example pass/fail and error type.
+* `mbpp_pass1_summary.json`: aggregate `pass@1` and error counts.

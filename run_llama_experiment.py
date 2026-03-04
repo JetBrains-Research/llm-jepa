@@ -100,7 +100,7 @@ def launch_training(method: str, gpu_ids: str, port: int) -> subprocess.Popen:
         "--no_save",
         "--wandb",
         f"--wandb_project={WANDB_PROJECT}",
-        f"--wandb_run_name=gsm8k_llama_{method}_s{SEED}",
+        f"--wandb_run_name={DATASET}_llama_{method}_s{SEED}",
     ]
     if method == "regular":
         cmd.append("--regular")
