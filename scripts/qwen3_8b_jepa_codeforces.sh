@@ -28,8 +28,9 @@ PREDICTORS=${PREDICTORS:-1}
 
 source .venv/bin/activate
 
+WANDB_ENABLED=${WANDB_ENABLED:-1}
 WANDB_FLAGS=()
-if [[ "${WANDB_ENABLED:-0}" == "1" ]]; then
+if [[ "${WANDB_ENABLED}" == "1" ]]; then
   WANDB_ENTITY=${WANDB_ENTITY:-machine-learning-methods-in-software-engineering}
   export WANDB_ENTITY
   WANDB_FLAGS=(--wandb --wandb_project "${WANDB_PROJECT:-llm-jepa}")

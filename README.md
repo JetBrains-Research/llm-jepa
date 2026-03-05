@@ -217,6 +217,7 @@ Default training behavior in both Codeforces scripts:
 * Runs evaluation every `50` steps (`--eval_strategy=steps --eval_steps=50`)
 * Runs one extra evaluation at global step `0` (`--eval_on_start`)
 * Logs training metrics every `1` step (`--logging_steps=1`)
+* Enables W&B logging by default (`WANDB_ENABLED=1`)
 
 ### 2. Train Qwen3-8B regular
 
@@ -231,7 +232,6 @@ MODEL_NAME=Qwen/Qwen3-8B \
 TRAIN_FILE=datasets/codeforces_train.jsonl \
 OUTPUT_DIR=./fine-tuned-codeforces-regular \
 CUDA_VISIBLE_DEVICES=2,3 \
-WANDB_ENABLED=1 \
 scripts/qwen3_8b_regular_codeforces.sh
 ```
 
@@ -251,7 +251,6 @@ LBD=1.0 \
 PREDICTORS=1 \
 LAST_TOKEN=-3 \
 CUDA_VISIBLE_DEVICES=2,3 \
-WANDB_ENABLED=1 \
 scripts/qwen3_8b_jepa_codeforces.sh
 ```
 
@@ -271,6 +270,12 @@ To keep train logs every step but eval every 50 explicitly:
 
 ```bash
 LOGGING_STEPS=1 EVAL_STEPS=50
+```
+
+To disable W&B for a run:
+
+```bash
+WANDB_ENABLED=0
 ```
 
 ## CodeContests Setup
