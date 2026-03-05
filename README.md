@@ -174,7 +174,7 @@ Outputs:
 * `mbpp_pass1_results.jsonl`: per-example pass/fail and error type.
 * `mbpp_pass1_summary.json`: aggregate `pass@1` and error counts.
 
-## Codeforces Setup and Training (No Evaluation)
+## Codeforces Setup and Training
 
 This section prepares `open-r1/codeforces` for supervised fine-tuning and runs Qwen3-8B training.
 
@@ -210,6 +210,11 @@ python scripts/prepare_codeforces_dataset.py \
 ```
 
 `--config verifiable-problems` is also accepted as a legacy alias and maps to `verifiable`.
+
+Default training behavior in both Codeforces scripts:
+
+* Uses `datasets/codeforces_test.jsonl` as `--eval_file`
+* Runs evaluation every `50` steps (`--eval_strategy=steps --eval_steps=50`)
 
 ### 2. Train Qwen3-8B regular
 
@@ -248,4 +253,8 @@ WANDB_ENABLED=1 \
 scripts/qwen3_8b_jepa_codeforces.sh
 ```
 
-No evaluation is run in these Codeforces scripts by design.
+To disable step-based eval, set:
+
+```bash
+EVAL_FILE="" EVAL_STEPS=0
+```

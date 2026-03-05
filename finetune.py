@@ -961,6 +961,16 @@ def main():
     parser.add_argument("--learning_rate", type=float, default=2e-5, help="Learning rate")
     parser.add_argument("--num_epochs", type=int, default=3, help="Number of training epochs")
     parser.add_argument("--eval_steps", type=int, default=10, help="Evaluation steps")
+    parser.add_argument(
+        "--eval_strategy",
+        type=str,
+        default="auto",
+        choices=["auto", "no", "steps", "epoch"],
+        help=(
+            "Evaluation scheduling strategy. "
+            "'auto' keeps historical behavior (epoch when eval dataset exists)."
+        ),
+    )
     parser.add_argument("--lora", action="store_true", help="Enable LoRA (default: full fine-tuning)")
     parser.add_argument("--lora_rank", type=int, default=16, help="LoRA rank. Default: 16.")
     parser.add_argument("--eval_split", type=float, default=0.05, help="Evaluation split ratio (if using single data file)")
@@ -1177,6 +1187,14 @@ def main():
     if torch.cuda.current_device() == 0:
         shutil.rmtree(output_dir, ignore_errors=True)
         os.makedirs(output_dir, exist_ok=True)
+    if eval_dataset:
+        if args.eval_strategy == "auto":
+            eval_strategy = "epoch"
+        else:
+            eval_strategy = args.eval_strategy
+    else:
+        eval_strategy = "no"
+
     training_args = TrainingArguments(
         output_dir=output_dir,
 
@@ -1188,7 +1206,8 @@ def main():
         num_train_epochs=args.num_epochs,
         
         # Evaluation
-        eval_strategy="epoch" if eval_dataset else "no",
+        eval_strategy=eval_strategy,
+        eval_steps=eval_steps if eval_strategy == "steps" else None,
         
         # Saving
         save_strategy="no" if args.no_save else "steps",
