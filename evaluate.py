@@ -715,7 +715,7 @@ def main():
     # Generation arguments
     parser.add_argument("--max_new_tokens", type=int, default=128, help="Maximum new tokens to generate. Use -1 to unset.")
     parser.add_argument("--max_length", type=int, default=512, help="Maximum total sequence length")
-    parser.add_argument("--temperature", type=float, default=0.0, help="Sampling temperature")
+    parser.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature")
     parser.add_argument("--top_p", type=float, default=1.0, help="Top-p (nucleus) sampling")
     parser.add_argument("--top_k", type=int, default=1, help="Top-k sampling")
     parser.add_argument("--repetition_penalty", type=float, default=1.1, help="Repetition penalty")
@@ -821,7 +821,8 @@ def main():
     print("\n2. Setting up generation configuration...")
     generation_config = GenerationConfig(
         model_name=args.model_name,
-        do_sample=True,
+        do_sample=args.temperature > 0,
+        temperature=args.temperature if args.temperature > 0 else None,
         max_new_tokens=args.max_new_tokens,
         max_length=args.max_length,
         repetition_penalty=args.repetition_penalty,

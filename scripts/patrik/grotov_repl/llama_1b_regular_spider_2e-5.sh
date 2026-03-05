@@ -5,7 +5,7 @@ NGPUS=$(echo "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | wc -l)
 # 64 effective = 8*8
 
 source .venv/bin/activate
-torchrun --nproc_per_node=$NGPUS finetune.py \
+torchrun --nproc_per_node=$NGPUS --master_port=29503 finetune.py \
   --train_file datasets/spider_train.jsonl \
   --output_dir=./results/fine-tuned \
   --num_epochs=4 --finetune_seed=82 --regular \
@@ -13,4 +13,4 @@ torchrun --nproc_per_node=$NGPUS finetune.py \
   --batch_size=8 --grad_accum=4 \
   --eval_accuracy --eval_vllm --wandb --wandb_project=llm-jepa --no_save \
   --spider_path=spider_data/database --use_original_test \
-  --temperature 1.0
+  --temperature 0.0

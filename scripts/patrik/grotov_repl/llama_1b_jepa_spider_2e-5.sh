@@ -14,4 +14,4 @@ torchrun --nproc_per_node=$NGPUS --master_port=29501 finetune.py \
   --batch_size=8 --grad_accum=4 \
   --eval_accuracy --eval_vllm --wandb --wandb_project=llm-jepa --no_save \
   --spider_path=spider_data/database --use_original_test \
-  --temperature 1.0
+  --temperature 0.0
