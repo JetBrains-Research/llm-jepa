@@ -5,7 +5,6 @@ import copy
 import math
 import os
 import re
-import subprocess
 import time
 from dotenv import load_dotenv
 load_dotenv()
@@ -828,30 +827,10 @@ class ProfilerFLOPCallback(TrainerCallback):
 
 
 _gsm8k_pattern = re.compile(r"\n#### (.+)$")
-_spider_db_pattern = re.compile(r"For db_id:\[(.+)\]")
 
 
-def _spider_eval(generated, messages, spider_path):
-    """Evaluate Spider by executing both SQL queries and comparing results."""
-    db_id = re.search(_spider_db_pattern, messages[1]["content"])
-    if not db_id:
-        return False
-    db_id = db_id.group(1)
-    dbfile = os.path.join(spider_path, db_id, db_id + '.sqlite')
-    try:
-        gen_result = subprocess.run(
-            ["sqlite3", dbfile, generated], capture_output=True, text=True,
-        ).stdout
-        gt_result = subprocess.run(
-            ["sqlite3", dbfile, messages[2]["content"]], capture_output=True, text=True,
-        ).stdout
-    except Exception:
-        return False
-    return gen_result == gt_result
-
-
-def _eval_generated(generated, messages, input_file, spider_path=""):
-    """Evaluate generated response against ground truth."""
+def _eval_generated(generated, messages, input_file):
+    """Evaluate generated response against ground truth (reuses evaluate.py logic)."""
     basename = os.path.basename(input_file)
     if "gsm8k" in basename:
         gt_match = re.search(_gsm8k_pattern, messages[2]["content"])
@@ -859,21 +838,25 @@ def _eval_generated(generated, messages, input_file, spider_path=""):
         gen_match = re.search(_gsm8k_pattern, generated)
         gen_answer = None if not gen_match else gen_match.group(1)
         return gt_answer == gen_answer
-    if basename.startswith("spider") and spider_path:
-        return _spider_eval(generated, messages, spider_path)
+    if basename.startswith("spider") or basename.startswith("nq_open"):
+        return generated == messages[2]["content"]
     return generated == messages[2]["content"]
 
 
 class EvalAccuracyCallback(TrainerCallback):
     """Generation-based eval at end of each epoch and/or every N steps, logs accuracy to W&B."""
 
-    def __init__(self, eval_examples, tokenizer, model_name, input_file, max_new_tokens=512, spider_path=""):
+    def __init__(self, eval_examples, tokenizer, model_name, input_file, max_new_tokens=512,
+                 temperature=0.0, top_p=1.0, top_k=1, do_sample=False):
         self.eval_examples = eval_examples
         self.tokenizer = tokenizer
         self.model_name = model_name
         self.input_file = input_file
         self.max_new_tokens = max_new_tokens
-        self.spider_path = spider_path
+        self.temperature = temperature
+        self.top_p = top_p
+        self.top_k = top_k
+        self.do_sample = do_sample
         self.chat_template_kwargs = {}
         if "Qwen3" in model_name:
             self.chat_template_kwargs["enable_thinking"] = False
@@ -895,8 +878,11 @@ class EvalAccuracyCallback(TrainerCallback):
                 **inputs,
                 pad_token_id=self.tokenizer.pad_token_id,
                 eos_token_id=self.tokenizer.eos_token_id,
-                do_sample=True,
+                do_sample=self.do_sample,
                 max_new_tokens=self.max_new_tokens,
+                temperature=self.temperature,
+                top_p=self.top_p,
+                top_k=self.top_k,
             )
         generated_tokens = outputs[0][len(inputs["input_ids"][0]):]
         return self.tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
@@ -918,7 +904,7 @@ class EvalAccuracyCallback(TrainerCallback):
                 messages = example["messages"]
                 prompt = self._format_prompt(messages)
                 generated = self._generate(eval_model, prompt)
-                is_correct = _eval_generated(generated, messages, self.input_file, self.spider_path)
+                is_correct = _eval_generated(generated, messages, self.input_file)
                 if is_correct:
                     local_correct += 1
                 table_rows.append([messages[1]["content"], messages[2]["content"], generated, is_correct])
@@ -960,160 +946,6 @@ class EvalAccuracyCallback(TrainerCallback):
         self._run_eval(state, model, label="epoch")
         if torch.distributed.is_initialized():
             torch.distributed.barrier()
-
-
-class VLLMEvalAccuracyCallback(TrainerCallback):
-    """Generation-based eval using vLLM batch inference.
-
-    At each eval point (epoch end / train begin) rank-0 saves the current
-    checkpoint to a temp directory, writes eval examples to a temp JSONL,
-    launches a vLLM engine, runs batch generation, scores the results, and
-    cleans up.  All other ranks simply wait at a barrier.
-    """
-
-    def __init__(self, eval_examples, tokenizer, model_name, input_file,
-                 max_new_tokens=256, spider_path="", tp_size=1, lora=False):
-        self.eval_examples = eval_examples
-        self.tokenizer = tokenizer
-        self.model_name = model_name
-        self.input_file = input_file
-        self.max_new_tokens = max_new_tokens
-        self.spider_path = spider_path
-        self.tp_size = tp_size
-        self.lora = lora
-
-    def _save_checkpoint(self, model):
-        """Save current model + tokenizer to a temp directory. Returns the path."""
-        import tempfile
-        tmp_dir = tempfile.mkdtemp(prefix="vllm_eval_ckpt_")
-        eval_model = model.module if hasattr(model, "module") else model
-        if self.lora:
-            eval_model = eval_model.merge_and_unload()
-        eval_model.save_pretrained(tmp_dir)
-        self.tokenizer.save_pretrained(tmp_dir)
-        return tmp_dir
-
-    @staticmethod
-    def _clear_torchrun_env():
-        """Remove torchrun-injected env vars so vLLM's subprocess doesn't
-        collide with the training NCCL group.  Returns a dict to restore."""
-        keys = [
-            "MASTER_ADDR", "MASTER_PORT", "RANK", "WORLD_SIZE",
-            "LOCAL_RANK", "LOCAL_WORLD_SIZE", "GROUP_RANK",
-            "TORCHELASTIC_RUN_ID", "TORCHELASTIC_RESTART_COUNT",
-            "TORCHELASTIC_MAX_RESTARTS", "TORCHELASTIC_USE_AGENT_STORE",
-        ]
-        saved = {}
-        for k in keys:
-            if k in os.environ:
-                saved[k] = os.environ.pop(k)
-        return saved
-
-    @staticmethod
-    def _restore_env(saved):
-        os.environ.update(saved)
-
-    def _run_eval(self, state, model, label="epoch"):
-        rank = torch.cuda.current_device()
-        if rank != 0:
-            if torch.distributed.is_initialized():
-                torch.distributed.barrier()
-            return
-
-        import tempfile
-        tmp_ckpt = self._save_checkpoint(model)
-        tmp_eval_file = tempfile.mktemp(suffix=".jsonl", prefix="vllm_eval_data_")
-        saved_env = self._clear_torchrun_env()
-        try:
-            with open(tmp_eval_file, "w") as f:
-                for ex in self.eval_examples:
-                    f.write(json.dumps(ex) + "\n")
-
-            from evaluate_vllm import (
-                load_tokenizer as vllm_load_tokenizer,
-                format_conversation as vllm_format_conversation,
-                get_messages as vllm_get_messages,
-                eval_response as vllm_eval_response,
-            )
-            from vllm import LLM, SamplingParams
-
-            tokenizer = vllm_load_tokenizer(tmp_ckpt)
-            prompts = []
-            all_messages = []
-            for ex in self.eval_examples:
-                messages = ex["messages"]
-                all_messages.append(messages)
-                full_messages = vllm_get_messages(self.model_name, messages)
-                prompts.append(vllm_format_conversation(full_messages, tokenizer))
-
-            llm = LLM(
-                model=tmp_ckpt,
-                dtype="bfloat16",
-                trust_remote_code=True,
-                tensor_parallel_size=self.tp_size,
-                max_model_len=4096,
-                enforce_eager=True,
-                gpu_memory_utilization=0.45,
-            )
-            sampling_params = SamplingParams(
-                temperature=0, max_tokens=self.max_new_tokens,
-            )
-            outputs = llm.generate(prompts, sampling_params)
-
-            correct = 0
-            table_rows = []
-            for output, messages in zip(outputs, all_messages):
-                text = output.outputs[0].text.strip()
-                if text.endswith("<|end|>"):
-                    text = text[:-7].strip()
-                is_correct = vllm_eval_response(
-                    text, messages, self.input_file, self.spider_path,
-                )
-                if is_correct:
-                    correct += 1
-                table_rows.append([
-                    messages[1]["content"], messages[2]["content"],
-                    text, is_correct,
-                ])
-
-            del llm
-            import gc
-            gc.collect()
-            torch.cuda.empty_cache()
-
-            total = len(self.eval_examples)
-            accuracy = correct / total if total > 0 else 0.0
-            print(f"[vLLM] Eval accuracy ({label} step={state.global_step}): "
-                  f"{accuracy:.4f} ({correct}/{total})")
-
-            try:
-                import wandb
-                if wandb.run is not None:
-                    table = wandb.Table(
-                        columns=["input", "ground_truth", "prediction", "correct"],
-                        data=table_rows,
-                    )
-                    wandb.log({
-                        "eval/accuracy": accuracy, "eval/correct": correct,
-                        "eval/total": total, "eval/predictions": table,
-                        "train/global_step": state.global_step,
-                    })
-            except ImportError:
-                pass
-        finally:
-            self._restore_env(saved_env)
-            shutil.rmtree(tmp_ckpt, ignore_errors=True)
-            if os.path.exists(tmp_eval_file):
-                os.remove(tmp_eval_file)
-
-        if torch.distributed.is_initialized():
-            torch.distributed.barrier()
-
-    def on_train_begin(self, args, state, control, model=None, **kwargs):
-        self._run_eval(state, model, label="start")
-
-    def on_epoch_end(self, args, state, control, model=None, **kwargs):
-        self._run_eval(state, model, label="epoch")
 
 
 def main():
@@ -1158,10 +990,11 @@ def main():
     parser.add_argument("--wandb_run_name", type=str, default=None, help="W&B run name. Auto-generated if not set.")
     parser.add_argument("--eval_accuracy", action="store_true", help="Run generation-based eval at end of each epoch (splits 20%% from train data).")
     parser.add_argument("--max_new_tokens_eval", type=int, default=256, help="Max new tokens for eval generation.")
-    parser.add_argument("--max_eval_samples", type=int, default=0, help="Max samples for generation-based eval (0=all).")
-    parser.add_argument("--spider_path", type=str, default="", help="Path to Spider databases (for SQL execution eval).")
-    parser.add_argument("--eval_vllm", action="store_true", help="Use vLLM batch inference for generation-based eval instead of HF generate. Saves checkpoint to a temp dir each eval.")
-    parser.add_argument("--eval_tp_size", type=int, default=1, help="Tensor-parallel size for vLLM eval (GPUs per replica).")
+    parser.add_argument("--max_eval_samples", type=int, default=50, help="Max samples for generation-based eval (0=all).")
+    parser.add_argument("--temperature", type=float, default=0.0, help="Sampling temperature for eval generation.")
+    parser.add_argument("--top_p", type=float, default=1.0, help="Top-p (nucleus) sampling for eval generation.")
+    parser.add_argument("--top_k", type=int, default=1, help="Top-k sampling for eval generation.")
+    parser.add_argument("--do_sample", action="store_true", help="Whether to use sampling for eval generation.")
 
     args = parser.parse_args()
     
@@ -1404,17 +1237,11 @@ def main():
         callbacks.append(flop_callback)
     if eval_raw_examples:
         eval_subset = eval_raw_examples[:args.max_eval_samples] if args.max_eval_samples > 0 else eval_raw_examples
-        if args.eval_vllm:
-            callbacks.append(VLLMEvalAccuracyCallback(
-                eval_subset, tokenizer, args.model_name,
-                args.train_file, max_new_tokens=args.max_new_tokens_eval,
-                spider_path=args.spider_path, tp_size=args.eval_tp_size,
-                lora=args.lora))
-        else:
-            callbacks.append(EvalAccuracyCallback(
-                eval_subset, tokenizer, args.model_name,
-                args.train_file, max_new_tokens=args.max_new_tokens_eval,
-                spider_path=args.spider_path))
+        callbacks.append(EvalAccuracyCallback(
+            eval_subset, tokenizer, args.model_name,
+            args.train_file, max_new_tokens=args.max_new_tokens_eval,
+            temperature=args.temperature, top_p=args.top_p, top_k=args.top_k,
+            do_sample=args.do_sample))
 
     # Initialize trainer
     if args.regular:
