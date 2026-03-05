@@ -272,3 +272,46 @@ To keep train logs every step but eval every 50 explicitly:
 ```bash
 LOGGING_STEPS=1 EVAL_STEPS=50
 ```
+
+## CodeContests Setup
+
+This section prepares `deepmind/code_contests` for supervised fine-tuning with:
+
+* user prompt = problem `description`
+* assistant target = one solution where `solutions.language == 3` (Python3)
+
+### 1. Prepare CodeContests dataset
+
+```bash
+source .venv/bin/activate
+
+python scripts/prepare_code_contests_dataset.py \
+  --dataset deepmind/code_contests \
+  --python-language-id 3 \
+  --output-dir datasets \
+  --train-file code_contests_train.jsonl \
+  --test-file code_contests_test.jsonl
+```
+
+Optional 90/10 random split:
+
+```bash
+python scripts/prepare_code_contests_dataset.py \
+  --dataset deepmind/code_contests \
+  --python-language-id 3 \
+  --output-dir datasets \
+  --train-file code_contests_train.jsonl \
+  --test-file code_contests_test.jsonl \
+  --resplit-test-size 0.1 \
+  --split-seed 42
+```
+
+### 2. Train with existing scripts
+
+Reuse the Codeforces training launchers by pointing them to the new files:
+
+```bash
+TRAIN_FILE=datasets/code_contests_train.jsonl \
+EVAL_FILE=datasets/code_contests_test.jsonl \
+uv run bash scripts/qwen3_8b_regular_codeforces.sh
+```
