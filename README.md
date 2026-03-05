@@ -315,3 +315,27 @@ TRAIN_FILE=datasets/code_contests_train.jsonl \
 EVAL_FILE=datasets/code_contests_test.jsonl \
 uv run bash scripts/qwen3_8b_regular_codeforces.sh
 ```
+
+Or use the dedicated wrapper with defaults baked in:
+
+```bash
+uv run bash scripts/qwen3_8b_regular_code_contests.sh
+```
+
+Run detached (background):
+
+```bash
+DETACH=1 uv run bash scripts/qwen3_8b_regular_code_contests.sh
+```
+
+JEPA wrapper with the same defaults:
+
+```bash
+uv run bash scripts/qwen3_8b_jepa_code_contests.sh
+```
+
+JEPA detached (background):
+
+```bash
+DETACH=1 uv run bash scripts/qwen3_8b_jepa_code_contests.sh
+```
