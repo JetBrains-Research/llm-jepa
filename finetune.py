@@ -264,6 +264,15 @@ def load_and_prepare_dataset(data_file, tokenizer, model_name,
         for i, mask in enumerate(attention_mask):
             if mask == 0:  # Padding token
                 labels[i] = -100
+
+        def unmask_assistant_span(start_idx, span_len):
+            for j in range(start_idx, min(start_idx + span_len, len(input_ids))):
+                if attention_mask[j] == 1:
+                    labels[j] = input_ids[j]
+            # Also unmask the EOS token right after the assistant span when present.
+            eos_pos = start_idx + span_len
+            if eos_pos < len(input_ids) and attention_mask[eos_pos] == 1:
+                labels[eos_pos] = input_ids[eos_pos]
         
         # Find assistant responses and unmask only those tokens
         for msg in messages:
@@ -272,29 +281,46 @@ def load_and_prepare_dataset(data_file, tokenizer, model_name,
                 
                 # Find where this assistant response appears in the tokenized text
                 assistant_tokens = tokenizer.encode(assistant_content, add_special_tokens=False)
-                
-                # Find the position of assistant response in input_ids
-                decoded_assistant = [tokenizer.decode(item) for item in assistant_tokens]
-                decoded_input = [tokenizer.decode(item) for item in input_ids]
-                for i in range(len(input_ids) - len(assistant_tokens) + 1):
-                    # Only check non-padding tokens
-                    if debug == 4 and torch.cuda.current_device() == 0:
-                        print(f"=======input_ids: {input_ids[i:i+len(assistant_tokens)]}")
-                        print(f"assistant_tokens: {assistant_tokens}")
-                    # if attention_mask[i] == 1 and input_ids[i:i+len(assistant_tokens)] == assistant_tokens:
-                    if attention_mask[i] == 1 and decoded_input[i:i+len(assistant_tokens)] == decoded_assistant:
-                        # Unmask the assistant response tokens
-                        for j in range(i, min(i + len(assistant_tokens), len(input_ids))):
-                            if attention_mask[j] == 1:  # Only unmask non-padding tokens
-                                labels[j] = input_ids[j]
-                        # Also unmask the EOS token right after the assistant response
-                        eos_pos = i + len(assistant_tokens)
-                        if eos_pos < len(input_ids) and attention_mask[eos_pos] == 1:
-                            labels[eos_pos] = input_ids[eos_pos]
+                if len(assistant_tokens) == 0:
+                    continue
+                span_len = len(assistant_tokens)
+                match_index = None
+
+                # Prefer exact token-id match (faster and less ambiguous).
+                for i in range(len(input_ids) - span_len + 1):
+                    if attention_mask[i] != 1:
+                        continue
+                    if 0 in attention_mask[i:i + span_len]:
+                        continue
+                    if input_ids[i:i + span_len] == assistant_tokens:
+                        match_index = i
                         break
+                
+                # Fallback for cases where exact token ids differ because of context-sensitive tokenization.
+                if match_index is None:
+                    decoded_assistant = [tokenizer.decode(item) for item in assistant_tokens]
+                    decoded_input = [tokenizer.decode(item) for item in input_ids]
+                    for i in range(len(input_ids) - span_len + 1):
+                        if debug == 4 and torch.cuda.current_device() == 0:
+                            print(f"=======input_ids: {input_ids[i:i+span_len]}")
+                            print(f"assistant_tokens: {assistant_tokens}")
+                        if attention_mask[i] != 1:
+                            continue
+                        if decoded_input[i:i + span_len] == decoded_assistant:
+                            match_index = i
+                            break
+
+                if match_index is not None:
+                    unmask_assistant_span(match_index, span_len)
                 
                 if debug == 4:
                     exit(0)
+
+        # If no target token was found, avoid an all-ignore batch (can cause NaN CE loss).
+        if all(label == -100 for label in labels):
+            labels = create_labels_for_all(input_ids, attention_mask)
+            if debug >= 5 and torch.cuda.current_device() == 0:
+                print("[WARN] No assistant span matched; using full-sequence labels for this sample.")
         
         return labels
     
@@ -894,7 +920,10 @@ class RepresentationTrainer(Trainer):
             exit(0)
 
         if self.debug == 5 and torch.cuda.current_device() == 0:
-            print(f"llm_loss: {lm_loss.float()}, jepa_loss: {jepa_loss.float()}")
+            print(
+                f"llm_loss: {lm_loss.float()}, jepa_loss: {jepa_loss.float()}, "
+                f"total_loss: {total_loss.float()} (gamma={self.gamma}, lbd={self.lbd})"
+            )
 
         if hasattr(self, '_eval_metrics'):
             self._eval_metrics['lm_loss'].append(lm_loss.float().item())
@@ -908,6 +937,7 @@ class RepresentationTrainer(Trainer):
                 import wandb
                 if wandb.run is not None:
                     log_dict = {"train/lm_loss": lm_loss.float().item()}
+                    log_dict["train/total_loss"] = total_loss.float().item()
                     if user_hidden_states is not None:
                         log_dict["train/jepa_loss"] = jepa_loss.float().item() if isinstance(jepa_loss, torch.Tensor) else float(jepa_loss)
                         log_dict["train/cosine_similarity"] = torch.mean(cosine_similarity).float().item()
@@ -1388,6 +1418,8 @@ def main():
         # Explicitly disable FSDP and sharding
         fsdp="",
         fsdp_config={},
+        # Keep custom losses on their native scale in distributed runs.
+        average_tokens_across_devices=False,
         
         # Other
         report_to="wandb" if args.wandb else "none",
