@@ -11,4 +11,5 @@ torchrun --nproc_per_node=$NGPUS --master_port=29501 finetune.py \
   --model_name=meta-llama/Llama-3.2-1B-Instruct --learning_rate=1e-5 \
   --batch_size=4 --grad_accum=16 \
   --eval_accuracy --eval_vllm --wandb --wandb_project=llm-jepa --no_save \
-  --spider_path=spider_data/database --use_original_test
+  --spider_path=spider_data/database --use_original_test \
+  --temperature 1.0

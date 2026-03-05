@@ -9,4 +9,5 @@ torchrun --nproc_per_node=$NGPUS finetune.py \
   --num_epochs=5 --finetune_seed=82 --regular \
   --model_name=Qwen/Qwen2.5-7B-Instruct --learning_rate=2e-5 \
   --lora --lora_rank=256 --batch_size=8 --grad_accum=8 \
-  --eval_accuracy --eval_vllm --wandb --wandb_project=llm-jepa --no_save
+  --eval_accuracy --eval_vllm --wandb --wandb_project=llm-jepa --no_save \
+  --temperature 1.0

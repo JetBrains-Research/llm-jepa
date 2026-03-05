@@ -972,7 +972,8 @@ class VLLMEvalAccuracyCallback(TrainerCallback):
     """
 
     def __init__(self, eval_examples, tokenizer, model_name, input_file,
-                 max_new_tokens=256, spider_path="", tp_size=1, lora=False):
+                 max_new_tokens=256, spider_path="", tp_size=1, lora=False,
+                 temperature=1.0):
         self.eval_examples = eval_examples
         self.tokenizer = tokenizer
         self.model_name = model_name
@@ -981,6 +982,7 @@ class VLLMEvalAccuracyCallback(TrainerCallback):
         self.spider_path = spider_path
         self.tp_size = tp_size
         self.lora = lora
+        self.temperature = temperature
 
     def _save_checkpoint(self, model):
         """Save current model + tokenizer to a temp directory. Returns the path."""
@@ -1056,7 +1058,7 @@ class VLLMEvalAccuracyCallback(TrainerCallback):
                 gpu_memory_utilization=0.45,
             )
             sampling_params = SamplingParams(
-                temperature=0, max_tokens=self.max_new_tokens,
+                temperature=self.temperature, max_tokens=self.max_new_tokens,
             )
             outputs = llm.generate(prompts, sampling_params)
 
@@ -1162,6 +1164,7 @@ def main():
     parser.add_argument("--spider_path", type=str, default="", help="Path to Spider databases (for SQL execution eval).")
     parser.add_argument("--eval_vllm", action="store_true", help="Use vLLM batch inference for generation-based eval instead of HF generate. Saves checkpoint to a temp dir each eval.")
     parser.add_argument("--eval_tp_size", type=int, default=1, help="Tensor-parallel size for vLLM eval (GPUs per replica).")
+    parser.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature for generation-based eval.")
     parser.add_argument("--use_original_test", action="store_true", help="Use the corresponding _test.jsonl file for eval instead of splitting the training data.")
 
     args = parser.parse_args()
@@ -1215,6 +1218,7 @@ def main():
             f"_lr{args.learning_rate}"
             f"{'_lbd' + str(args.lbd) if not args.regular else ''}"
             f"{'_lora' + str(args.lora_rank) if args.lora else ''}"
+            f"_t{args.temperature}"
             f"_s{args.finetune_seed}"
         )
         wandb.init(project=args.wandb_project, name=run_name, config=vars(args))
@@ -1431,7 +1435,7 @@ def main():
                 eval_subset, tokenizer, args.model_name,
                 args.train_file, max_new_tokens=args.max_new_tokens_eval,
                 spider_path=args.spider_path, tp_size=args.eval_tp_size,
-                lora=args.lora))
+                lora=args.lora, temperature=args.temperature))
         else:
             callbacks.append(EvalAccuracyCallback(
                 eval_subset, tokenizer, args.model_name,
