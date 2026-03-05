@@ -1162,6 +1162,7 @@ def main():
     parser.add_argument("--spider_path", type=str, default="", help="Path to Spider databases (for SQL execution eval).")
     parser.add_argument("--eval_vllm", action="store_true", help="Use vLLM batch inference for generation-based eval instead of HF generate. Saves checkpoint to a temp dir each eval.")
     parser.add_argument("--eval_tp_size", type=int, default=1, help="Tensor-parallel size for vLLM eval (GPUs per replica).")
+    parser.add_argument("--use_original_test", action="store_true", help="Use the corresponding _test.jsonl file for eval instead of splitting the training data.")
 
     args = parser.parse_args()
     
@@ -1235,7 +1236,19 @@ def main():
     if args.train_file:
         train_file_path = args.train_file
 
-        if args.eval_accuracy:
+        # --use_original_test: evaluate on the dedicated *_test.jsonl file (e.g.
+        # spider_test.jsonl) so that in-training eval matches the full benchmark
+        # instead of a small held-out slice of the training data.  When set, training
+        # uses the full train file unsplit.
+        if args.eval_accuracy and args.use_original_test:
+            test_file = re.sub(r'_train\.jsonl$', '_test.jsonl', args.train_file)
+            if not os.path.exists(test_file):
+                parser.error(f"--use_original_test: expected test file {test_file} does not exist")
+            test_dataset = load_dataset('json', data_files=test_file)['train']
+            eval_raw_examples = [dict(ex) for ex in test_dataset]
+            if torch.cuda.current_device() == 0:
+                print(f"Using original test set: {test_file} ({len(eval_raw_examples)} examples)")
+        elif args.eval_accuracy:
             raw_dataset = load_dataset('json', data_files=args.train_file)['train']
             split = raw_dataset.train_test_split(
                 test_size=args.eval_split, seed=args.finetune_seed, shuffle=True)
@@ -1257,7 +1270,7 @@ def main():
             debug=args.debug, train_all=args.train_all, plain=args.plain,
             front_pred=args.front_pred, reverse_pred=args.reverse_pred)
 
-        if args.eval_accuracy:
+        if args.eval_accuracy and not args.use_original_test:
             torch.distributed.barrier() if torch.distributed.is_initialized() else None
             if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
                 os.remove(train_split_file)
@@ -1270,6 +1283,15 @@ def main():
                 args.max_length, regular=args.regular,
                 debug=args.debug, train_all=args.train_all, plain=args.plain,
                 front_pred=args.front_pred, reverse_pred=args.reverse_pred)
+        elif args.eval_accuracy and eval_raw_examples and args.use_original_test:
+            test_file = re.sub(r'_train\.jsonl$', '_test.jsonl', args.train_file)
+            eval_dataset = load_and_prepare_dataset(
+                test_file, tokenizer, args.model_name,
+                args.max_length, regular=args.regular,
+                debug=args.debug, train_all=args.train_all, plain=args.plain,
+                front_pred=args.front_pred, reverse_pred=args.reverse_pred)
+            if torch.cuda.current_device() == 0:
+                print(f"Using {len(eval_raw_examples)} eval examples for loss calculation")
         elif args.eval_accuracy and eval_raw_examples:
             eval_split_file = args.train_file + '.eval_split.jsonl'
             with open(eval_split_file, 'w') as f:
