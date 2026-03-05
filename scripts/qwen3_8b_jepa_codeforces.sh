@@ -21,6 +21,7 @@ GRAD_ACCUM=${GRAD_ACCUM:-8}
 LORA_RANK=${LORA_RANK:-256}
 EVAL_STEPS=${EVAL_STEPS:-50}
 LOGGING_STEPS=${LOGGING_STEPS:-1}
+EVAL_ON_START=${EVAL_ON_START:-1}
 LAST_TOKEN=${LAST_TOKEN:--3}
 LBD=${LBD:-1.0}
 PREDICTORS=${PREDICTORS:-1}
@@ -41,6 +42,9 @@ if [[ -n "${EVAL_FILE}" && "${EVAL_STEPS}" -gt 0 ]]; then
     --eval_strategy=steps
     --eval_steps="$EVAL_STEPS"
   )
+  if [[ "${EVAL_ON_START}" == "1" ]]; then
+    EVAL_FLAGS+=(--eval_on_start)
+  fi
 fi
 
 torchrun --nproc_per_node="$NGPUS" --master_port=29504 finetune.py \

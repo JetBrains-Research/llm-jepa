@@ -215,6 +215,7 @@ Default training behavior in both Codeforces scripts:
 
 * Uses `datasets/codeforces_test.jsonl` as `--eval_file`
 * Runs evaluation every `50` steps (`--eval_strategy=steps --eval_steps=50`)
+* Runs one extra evaluation at global step `0` (`--eval_on_start`)
 * Logs training metrics every `1` step (`--logging_steps=1`)
 
 ### 2. Train Qwen3-8B regular
@@ -258,6 +259,12 @@ To disable step-based eval, set:
 
 ```bash
 EVAL_FILE="" EVAL_STEPS=0
+```
+
+To keep step eval but disable only step-0 eval, set:
+
+```bash
+EVAL_ON_START=0
 ```
 
 To keep train logs every step but eval every 50 explicitly:

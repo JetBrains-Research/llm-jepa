@@ -506,6 +506,121 @@ def setup_model_and_tokenizer(model_name, use_lora=True, lora_rank=16, pretrain=
     return model, tokenizer
 
 
+def _extract_prompt_ids_for_nan_debug(inputs):
+    """Best-effort prompt extraction for NaN diagnostics."""
+    if "input_ids_user" in inputs and "attention_mask_user" in inputs:
+        user_ids = inputs["input_ids_user"][0]
+        user_mask = inputs["attention_mask_user"][0]
+        prompt_ids = user_ids[user_mask != 0]
+    else:
+        input_ids = inputs["input_ids"][0]
+        attention_mask = inputs.get("attention_mask")
+        if attention_mask is not None:
+            input_ids = input_ids[attention_mask[0] != 0]
+
+        labels = inputs.get("labels")
+        if labels is not None:
+            current_labels = labels[0]
+            if attention_mask is not None:
+                current_labels = current_labels[attention_mask[0] != 0]
+            valid_positions = (current_labels != -100).nonzero(as_tuple=True)[0]
+            if valid_positions.numel() > 0:
+                first_target = int(valid_positions[0].item())
+                input_ids = input_ids[:first_target]
+        prompt_ids = input_ids
+
+    if prompt_ids.numel() > 1024:
+        prompt_ids = prompt_ids[-1024:]
+    return prompt_ids
+
+
+def _report_nan_prompt_and_generation(trainer, model, inputs, loss_name, loss_value):
+    """Print prompt and a short generation when a non-finite loss is detected."""
+    if not torch.is_tensor(loss_value) or torch.isfinite(loss_value).all():
+        return
+    if torch.cuda.current_device() != 0:
+        return
+    if getattr(trainer, "_nan_report_count", 0) >= getattr(trainer, "nan_report_limit", 3):
+        return
+
+    tokenizer = getattr(trainer, "processing_class", None)
+    if tokenizer is None:
+        tokenizer = getattr(trainer, "tokenizer", None)
+
+    print(f"[NaN-DEBUG] {loss_name} is non-finite: {loss_value}")
+    if "labels" in inputs:
+        valid_labels = (inputs["labels"] != -100).sum(dim=1).detach().to("cpu").tolist()
+        print(f"[NaN-DEBUG] valid label counts in batch: {valid_labels}")
+
+    if tokenizer is None:
+        print("[NaN-DEBUG] tokenizer unavailable, skip prompt/generation dump")
+        trainer._nan_report_count = getattr(trainer, "_nan_report_count", 0) + 1
+        return
+
+    prompt_ids = _extract_prompt_ids_for_nan_debug(inputs)
+    if prompt_ids.numel() == 0:
+        print("[NaN-DEBUG] empty prompt ids")
+        trainer._nan_report_count = getattr(trainer, "_nan_report_count", 0) + 1
+        return
+
+    prompt_ids_cpu = prompt_ids.detach().to("cpu")
+    prompt_text = tokenizer.decode(prompt_ids_cpu.tolist(), skip_special_tokens=False)
+    print("[NaN-DEBUG] Prompt:")
+    print(prompt_text)
+
+    try:
+        if hasattr(model, "device"):
+            model_device = model.device
+        else:
+            model_device = next(model.parameters()).device
+        gen_input = prompt_ids_cpu.unsqueeze(0).to(model_device)
+
+        pad_token_id = tokenizer.pad_token_id
+        eos_token_id = tokenizer.eos_token_id
+        if pad_token_id is None:
+            pad_token_id = eos_token_id
+
+        was_training = model.training
+        model.eval()
+        with torch.no_grad():
+            generated = model.generate(
+                input_ids=gen_input,
+                attention_mask=torch.ones_like(gen_input),
+                do_sample=False,
+                max_new_tokens=128,
+                pad_token_id=pad_token_id,
+                eos_token_id=eos_token_id,
+            )
+        if was_training:
+            model.train()
+        gen_tokens = generated[0][gen_input.shape[1]:].detach().to("cpu")
+        gen_text = tokenizer.decode(gen_tokens.tolist(), skip_special_tokens=True)
+        print("[NaN-DEBUG] Generation:")
+        print(gen_text)
+    except Exception as e:
+        print(f"[NaN-DEBUG] generation failed: {e}")
+
+    trainer._nan_report_count = getattr(trainer, "_nan_report_count", 0) + 1
+
+
+class RegularTrainer(Trainer):
+    def __init__(self, *args, **kwargs):
+        self.debug = kwargs.pop('debug', 0)
+        self.nan_report_limit = kwargs.pop('nan_report_limit', 3)
+        self._nan_report_count = 0
+        super().__init__(*args, **kwargs)
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        loss, outputs = super().compute_loss(
+            model,
+            inputs,
+            return_outputs=True,
+            num_items_in_batch=num_items_in_batch,
+        )
+        _report_nan_prompt_and_generation(self, model, inputs, "loss", loss)
+        return (loss, outputs) if return_outputs else loss
+
+
 class RepresentationTrainer(Trainer):
     """
     Trainer to regularize representations.
@@ -517,6 +632,7 @@ class RepresentationTrainer(Trainer):
         self.gamma = kwargs.pop('gamma', 1.0)
         self.last_token = kwargs.pop('last_token', -2)
         self.debug = kwargs.pop('debug', 0)
+        self.nan_report_limit = kwargs.pop('nan_report_limit', 3)
         self.additive_mask = kwargs.pop('additive_mask', False)
         self.jepa_l2 = kwargs.pop('jepa_l2', False)
         self.jepa_mse = kwargs.pop('jepa_mse', False)
@@ -524,6 +640,7 @@ class RepresentationTrainer(Trainer):
         self.jepa_ratio = kwargs.pop('jepa_ratio', -1.0)
         assert self.jepa_l2 + self.jepa_mse <= 1, "Only one of jepa_l2 and jepa_mse can be True."
         super().__init__(*args, **kwargs)
+        self._nan_report_count = 0
     
     def _last_token_index(self, input_ids, labels, attention_mask):
         index = []
@@ -767,6 +884,8 @@ class RepresentationTrainer(Trainer):
             jepa_loss = 0.0
 
         total_loss = self.gamma * lm_loss + self.lbd * jepa_loss
+        _report_nan_prompt_and_generation(self, model, inputs, "lm_loss", lm_loss)
+        _report_nan_prompt_and_generation(self, model, inputs, "total_loss", total_loss)
 
         if self.debug == 2 and torch.cuda.current_device() == 0:
             print(lm_loss, self.lbd, torch.mean(cosine_similarity))
@@ -824,6 +943,30 @@ class ProfilerFLOPCallback(TrainerCallback):
             
             if torch.cuda.current_device() == 0:  # and (state.global_step == 63 or state.global_step % 10 == 0):
                 print(f"Step {state.global_step}: FLOPs: {step_flops:,.0f}")
+
+
+class EvalOnStartCallback(TrainerCallback):
+    """Run a full eval pass once at global step 0."""
+
+    def __init__(self):
+        self.trainer = None
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        if self.trainer is None or state.global_step != 0:
+            return control
+
+        rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+        if rank == 0:
+            print("Running eval at step 0...")
+
+        metrics = self.trainer.evaluate()
+
+        if rank == 0:
+            print(f"Step-0 eval metrics: {metrics}")
+
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()
+        return control
 
 
 _gsm8k_pattern = re.compile(r"\n#### (.+)$")
@@ -961,6 +1104,7 @@ def main():
     parser.add_argument("--learning_rate", type=float, default=2e-5, help="Learning rate")
     parser.add_argument("--num_epochs", type=int, default=3, help="Number of training epochs")
     parser.add_argument("--eval_steps", type=int, default=10, help="Evaluation steps")
+    parser.add_argument("--eval_on_start", action="store_true", help="Run eval once at global step 0 before training.")
     parser.add_argument(
         "--logging_steps",
         type=int,
@@ -1264,6 +1408,8 @@ def main():
     callbacks = []
     if args.track_flop:
         callbacks.append(flop_callback)
+    if args.eval_on_start and eval_dataset is not None:
+        callbacks.append(EvalOnStartCallback())
     if eval_raw_examples:
         eval_subset = eval_raw_examples[:args.max_eval_samples] if args.max_eval_samples > 0 else eval_raw_examples
         callbacks.append(EvalAccuracyCallback(
@@ -1276,7 +1422,7 @@ def main():
     if args.regular:
         if torch.cuda.current_device() == 0:
             print("\n3. Initializing regular trainer...")
-        trainer = Trainer(
+        trainer = RegularTrainer(
             model=model,
             args=training_args,
             train_dataset=train_dataset,
@@ -1284,6 +1430,7 @@ def main():
             processing_class=tokenizer,
             data_collator=data_collator,
             callbacks=callbacks,
+            debug=args.debug,
         )
     else:
         if torch.cuda.current_device() == 0:
@@ -1308,7 +1455,7 @@ def main():
         )
 
     for cb in callbacks:
-        if isinstance(cb, EvalAccuracyCallback):
+        if isinstance(cb, (EvalAccuracyCallback, EvalOnStartCallback)):
             cb.trainer = trainer
 
     if torch.cuda.current_device() == 0 and args.lora:
