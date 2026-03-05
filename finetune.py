@@ -962,6 +962,15 @@ def main():
     parser.add_argument("--num_epochs", type=int, default=3, help="Number of training epochs")
     parser.add_argument("--eval_steps", type=int, default=10, help="Evaluation steps")
     parser.add_argument(
+        "--logging_steps",
+        type=int,
+        default=0,
+        help=(
+            "Training logging frequency in optimizer steps. "
+            "If <= 0, falls back to --eval_steps."
+        ),
+    )
+    parser.add_argument(
         "--eval_strategy",
         type=str,
         default="auto",
@@ -1170,6 +1179,7 @@ def main():
     
     # Training arguments - optimized for multi-GPU stability
     eval_steps = args.eval_steps if not args.pretrain else args.eval_steps * 20
+    logging_steps = args.logging_steps if args.logging_steps > 0 else eval_steps
     save_steps = len(train_dataset) // (world_size * args.batch_size * args.grad_accum)
     if args.same_flop:
         if args.jepa_ratio > 0.0:
@@ -1216,7 +1226,7 @@ def main():
 
         # Logging
         logging_dir=f"{args.output_dir}/logs",
-        logging_steps=args.eval_steps,
+        logging_steps=logging_steps,
         
         # Optimization - key changes for stability
         fp16=False,

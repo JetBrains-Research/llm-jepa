@@ -20,6 +20,7 @@ BATCH_SIZE=${BATCH_SIZE:-8}
 GRAD_ACCUM=${GRAD_ACCUM:-8}
 LORA_RANK=${LORA_RANK:-256}
 EVAL_STEPS=${EVAL_STEPS:-50}
+LOGGING_STEPS=${LOGGING_STEPS:-1}
 LAST_TOKEN=${LAST_TOKEN:--3}
 LBD=${LBD:-1.0}
 PREDICTORS=${PREDICTORS:-1}
@@ -49,6 +50,7 @@ torchrun --nproc_per_node="$NGPUS" --master_port=29504 finetune.py \
   --last_token="$LAST_TOKEN" --lbd="$LBD" --predictors="$PREDICTORS" \
   --model_name="$MODEL_NAME" --learning_rate="$LEARNING_RATE" \
   --lora --lora_rank="$LORA_RANK" --batch_size="$BATCH_SIZE" --grad_accum="$GRAD_ACCUM" \
+  --logging_steps="$LOGGING_STEPS" \
   "${EVAL_FLAGS[@]}" \
   --no_save \
   "${WANDB_FLAGS[@]}"
