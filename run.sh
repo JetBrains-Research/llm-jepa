@@ -16,7 +16,7 @@ run_regular() {
   echo "Success Rate: regular ${base_model_name} lr=${learning_rate} e=${epoch} lt=${last_token} p=${predictors} s=${seed} lbd=${lbd} dataset=${dataset}" >> output.txt
   torchrun --nproc_per_node=8 finetune.py \
     --train_file ${dataset}_train.jsonl \
-    --output_dir=./fine-tuned --num_epochs=${epoch} --finetune_seed=${seed} --regular \
+    --output_dir=./results/fine-tuned --num_epochs=${epoch} --finetune_seed=${seed} --regular \
     --model_name=${base_model_name} --learning_rate=${learning_rate} ${WANDB_FLAGS}
   python evaluate.py --model_name=./fine-tuned \
     --input_file=${dataset}_test.jsonl --output_file=eval.jsonl --split_tune_untune \
@@ -37,7 +37,7 @@ run_jepa() {
   echo "Success Rate: jepa ${base_model_name} lr=${learning_rate} e=${epoch} lt=${last_token} p=${predictors} s=${seed} lbd=${lbd} dataset=${dataset}" >> output.txt
   torchrun --nproc_per_node=8 finetune.py \
     --train_file ${dataset}_train.jsonl \
-    --output_dir=./fine-tuned --num_epochs=${epoch} --finetune_seed=${seed} \
+    --output_dir=./results/fine-tuned --num_epochs=${epoch} --finetune_seed=${seed} \
     --last_token=${last_token} --lbd=${lbd} --predictors=${predictors} \
     --model_name=${base_model_name} --learning_rate=${learning_rate} ${WANDB_FLAGS}
   python evaluate.py --model_name=./fine-tuned \
