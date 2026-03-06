@@ -249,11 +249,50 @@ def get_test_cases(
 
 
 def sanitize_generated_code(text: str) -> str:
-    text = text.strip()
-    fenced = re.findall(r"```(?:python)?\s*\n(.*?)```", text, flags=re.DOTALL | re.IGNORECASE)
+    code = text.strip()
+    fenced = re.findall(r"```(?:python)?\s*\n(.*?)```", code, flags=re.DOTALL | re.IGNORECASE)
     if fenced:
-        return fenced[0].strip()
-    return text
+        code = fenced[0].strip()
+
+    cleanup_patterns = [
+        # Qwen/DeepSeek style thinking blocks.
+        (r"<think>.*?</think>", " "),
+        # Generic analysis/reasoning tags.
+        (r"<analysis>.*?</analysis>", " "),
+        (r"<reasoning>.*?</reasoning>", " "),
+        # Common chat wrapper tokens.
+        (r"<\|im_start\|>assistant", " "),
+        (r"<\|im_end\|>", " "),
+        (r"<\|assistant\|>", " "),
+        (r"<\|end\|>", " "),
+    ]
+    for pattern, replacement in cleanup_patterns:
+        code = re.sub(pattern, replacement, code, flags=re.DOTALL | re.IGNORECASE)
+
+    code = code.strip()
+    if not code:
+        return code
+
+    # If full text is still not valid Python, try dropping non-code prefixes.
+    try:
+        compile(code, "<generated>", "exec")
+        return code
+    except SyntaxError:
+        pass
+
+    lines = code.splitlines()
+    start_idx = 0
+    code_start = re.compile(
+        r"^\s*(?:"
+        r"from\s+\w+|import\s+\w+|def\s+\w+|class\s+\w+|@|if\s+__name__\s*==|"
+        r"for\s+|while\s+|try:|with\s+|return\b|print\(|[A-Za-z_]\w*\s*=|#)"
+    )
+    for idx, line in enumerate(lines):
+        if code_start.search(line):
+            start_idx = idx
+            break
+    trimmed = "\n".join(lines[start_idx:]).strip()
+    return trimmed or code
 
 
 def _set_memory_limit(memory_limit_mb: int) -> None:

@@ -192,7 +192,8 @@ python scripts/prepare_codeforces_dataset.py \
   --assistant-fields editorial \
   --output-dir datasets \
   --train-file codeforces_train.jsonl \
-  --test-file codeforces_test.jsonl
+  --test-file codeforces_test.jsonl \ 
+  --keep-metadata
 ```
 
 Optional 90/10 random split:
@@ -295,7 +296,8 @@ python scripts/prepare_code_contests_dataset.py \
   --python-language-id 3 \
   --output-dir datasets \
   --train-file code_contests_train.jsonl \
-  --test-file code_contests_test.jsonl
+  --test-file code_contests_test.jsonl \
+  --keep-metadata
 ```
 
 Optional 90/10 random split:
