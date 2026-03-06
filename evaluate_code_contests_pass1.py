@@ -27,12 +27,21 @@ def get_messages(model_name: str, messages: list[dict[str, str]]) -> list[dict[s
     return messages
 
 
-def format_conversation(messages: list[dict[str, str]], tokenizer: Any) -> str:
+def format_conversation(
+    messages: list[dict[str, str]],
+    tokenizer: Any,
+    model_name: str,
+    enable_thinking: bool,
+) -> str:
     filtered = [message for message in messages if message["role"] != "assistant"]
+    chat_template_kwargs = {}
+    if "qwen3" in model_name.lower() and not enable_thinking:
+        chat_template_kwargs["enable_thinking"] = False
     return tokenizer.apply_chat_template(
         filtered,
         tokenize=False,
         add_generation_prompt=True,
+        **chat_template_kwargs,
     )
 
 
@@ -138,6 +147,11 @@ def parse_args() -> argparse.Namespace:
         choices=["tokens", "lines"],
         default="tokens",
         help="Output comparison mode. tokens is whitespace-insensitive.",
+    )
+    parser.add_argument(
+        "--enable_thinking",
+        action="store_true",
+        help="Enable Qwen3 thinking mode during generation (disabled by default).",
     )
     parser.add_argument("--debug", action="store_true", help="Print debug info")
     args = parser.parse_args()
@@ -557,7 +571,14 @@ def generate_responses(dataset: Any, args: argparse.Namespace) -> list[str]:
             {"role": "user", "content": user_prompt},
         ]
         full_messages = get_messages(args.original_model_name, prompt_messages)
-        prompts.append(format_conversation(full_messages, tokenizer))
+        prompts.append(
+            format_conversation(
+                full_messages,
+                tokenizer,
+                model_name=args.original_model_name,
+                enable_thinking=args.enable_thinking,
+            )
+        )
 
     llm = LLM(
         model=args.model_name,
@@ -607,6 +628,8 @@ def main() -> None:
 
     if args.mode == "generated":
         print(f"Model: {args.model_name}")
+        if "qwen3" in args.original_model_name.lower():
+            print(f"Qwen3 thinking enabled: {args.enable_thinking}")
         responses = generate_responses(dataset, args)
     else:
         print("Using reference solutions from input dataset rows.")
