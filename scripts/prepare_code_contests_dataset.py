@@ -217,7 +217,20 @@ def to_messages(
     }
 
     if keep_metadata:
-        for key in ("name", "description", "difficulty", "cf_rating", "cf_tags"):
+        for key in (
+            "name",
+            "description",
+            "difficulty",
+            "cf_rating",
+            "cf_tags",
+            "public_tests",
+            "private_tests",
+            "generated_tests",
+            "time_limit",
+            "memory_limit_bytes",
+            "input_file",
+            "output_file",
+        ):
             if key in example and example[key] is not None:
                 row[key] = example[key]
         row["python_language_id"] = python_language_id

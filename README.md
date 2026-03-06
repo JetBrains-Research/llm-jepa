@@ -344,3 +344,42 @@ JEPA detached (background):
 ```bash
 DETACH=1 uv run bash scripts/qwen3_8b_jepa_code_contests.sh
 ```
+
+### 3. Evaluate pass@1 on CodeContests
+
+Execution-based evaluator:
+
+* script: `evaluate_code_contests_pass1.py`
+* compares generated code output against test-case outputs
+* uses test metadata in `public_tests`, `private_tests`, `generated_tests`
+* if your existing `code_contests_test.jsonl` was created before this update, regenerate it so test metadata is present
+
+Convenience launcher:
+
+```bash
+uv run bash scripts/code_contests_pass1_eval.sh
+```
+
+First, validate the evaluator with reference solutions from dataset rows:
+
+```bash
+MODE=reference \
+OUTPUT_FILE=fine-tuned-codeforces-regular/code_contests_ref_pass1_results.jsonl \
+SUMMARY_FILE=fine-tuned-codeforces-regular/code_contests_ref_pass1_summary.json \
+uv run bash scripts/code_contests_pass1_eval.sh
+```
+
+Then run real model pass@1:
+
+```bash
+MODE=generated \
+MODEL_NAME=./fine-tuned-codeforces-regular \
+ORIGINAL_MODEL_NAME=Qwen/Qwen3-8B \
+uv run bash scripts/code_contests_pass1_eval.sh
+```
+
+Run evaluation detached:
+
+```bash
+DETACH=1 MODE=generated uv run bash scripts/code_contests_pass1_eval.sh
+```
